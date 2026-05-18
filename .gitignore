@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Audio files
+audio/*.mp3
+audio/*.MP3
+audio/*.wav
+audio/*.m4a
+audio/*.flac
+audio/*.ogg
+audio/*.webm
+audio/*.mp4
+
+# Output
+Doc/
+*.docx
+
+# Node
+node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+mongo_data/
+redis_data/
+minio_data/

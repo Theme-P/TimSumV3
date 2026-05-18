@@ -1,0 +1,159 @@
+services:
+  # Database Container — with authentication
+  mongo:
+    image: mongo:latest
+    container_name: timsumv3-mongo
+    restart: unless-stopped
+    # No ports exposed — internal network only
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASS}
+      - MONGO_INITDB_DATABASE=timsumv3
+    volumes:
+      - mongo_data:/data/db
+      - ./backend/scripts/init_mongo.js:/docker-entrypoint-initdb.d/init_mongo.js:ro
+    networks:
+      - app-network
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD", "mongosh", "-u", "${MONGO_USER}", "-p", "${MONGO_PASS}", "--eval", "db.adminCommand('ping')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Redis — Celery broker (with password)
+  redis:
+    image: redis:7-alpine
+    container_name: timsumv3-redis
+    restart: unless-stopped
+    # No ports exposed — internal network only
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    networks:
+      - app-network
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # MinIO — Object Storage (with strong credentials)
+  minio:
+    image: minio/minio:latest
+    container_name: timsumv3-minio
+    restart: unless-stopped
+    ports:
+      - "9001:9001"   # Console only — no data port exposed
+    environment:
+      - MINIO_ROOT_USER=${MINIO_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_PASS}
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - app-network
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Backend — FastAPI (API only, no GPU needed)
+  backend:
+    build: ./backend
+    container_name: timsumv3-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - MONGO_CONNECTION_STRING=mongodb://${MONGO_USER}:${MONGO_PASS}@mongo:27017
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_USER}
+      - MINIO_SECRET_KEY=${MINIO_PASS}
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    command: uvicorn api:app --host 0.0.0.0 --port 8000 --workers 2
+    networks:
+      - app-network
+    mem_limit: 4g
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Celery Worker — GPU transcription (runs on GPU node)
+  worker:
+    build: ./backend
+    container_name: timsumv3-worker
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HF_HOME=/app/.cache/huggingface
+      - TORCH_HOME=/app/.cache/torch
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - MONGO_CONNECTION_STRING=mongodb://${MONGO_USER}:${MONGO_PASS}@mongo:27017
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_USER}
+      - MINIO_SECRET_KEY=${MINIO_PASS}
+    volumes:
+      - whisperx_cache:/app/.cache
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    command: celery -A app.celery_app:celery_app worker --loglevel=info --concurrency=1 --pool=solo
+    networks:
+      - app-network
+    mem_limit: 16g
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.celery_app:celery_app inspect ping --timeout 10 2>/dev/null | grep -q 'pong' || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
+
+  # Frontend — React + Nginx Container
+  frontend:
+    build: ./frontend
+    container_name: timsumv3-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  whisperx_cache:
+  mongo_data:
+  redis_data:
+  minio_data:

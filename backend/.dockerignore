@@ -1,0 +1,10 @@
+.git
+__pycache__
+*.pyc
+node_modules
+.env
+audio/
+Doc/
+*.mp3
+*.wav
+*.m4a
