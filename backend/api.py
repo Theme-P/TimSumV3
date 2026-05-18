@@ -191,6 +191,7 @@ async def transcribe_summarize(
     request: Request,
     audio: UploadFile = File(..., description="Audio file to transcribe"),
     meeting_type_id: int = Form(0, description="Meeting type ID (0=auto-detect, 1-11=specific type)"),
+    email_recipient: str = Form("", description="Optional: email to auto-send results to"),
     user: UserData = Depends(get_current_user),
     mongo_service: MongoService = Depends(get_mongo_service),
     storage: StorageService = Depends(get_storage),
@@ -198,10 +199,16 @@ async def transcribe_summarize(
     """
     Submit audio file for async transcription and summarization.
     Returns a job_id immediately — poll /api/jobs/{job_id} for progress.
+    If email_recipient is provided, results will be auto-sent when processing completes.
     """
     # Validate meeting type
     if meeting_type_id < 0 or meeting_type_id > 11:
         raise HTTPException(status_code=400, detail="meeting_type_id must be between 0 and 11")
+
+    # Lightweight email validation (full RFC validation is not worth it; SMTP server is the source of truth)
+    email_recipient = (email_recipient or "").strip()
+    if email_recipient and ("@" not in email_recipient or "." not in email_recipient.split("@")[-1]):
+        raise HTTPException(status_code=400, detail="Invalid email_recipient format")
 
     # Validate file type
     allowed_extensions = ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.webm', '.mp4']
@@ -243,6 +250,7 @@ async def transcribe_summarize(
         audio_file=audio.filename,
         meeting_type_id=meeting_type_id,
         audio_path=object_name,
+        email_recipient=email_recipient,
     )
 
     # Send task to Celery worker
@@ -252,6 +260,7 @@ async def transcribe_summarize(
         original_filename=audio.filename,
         meeting_type_id=meeting_type_id,
         user_id=str(user.id),
+        email_recipient=email_recipient,
     )
 
     return {"success": True, "job_id": job_id, "status": "queued"}

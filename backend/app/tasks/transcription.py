@@ -21,6 +21,8 @@ from app.celery_app import celery_app
 from app.services.pipeline import TranscribeSummaryPipeline
 from app.services.storage import StorageService, BUCKET_AUDIO, BUCKET_CLIPS
 from app.services.db import get_worker_db
+from app.services.email_service import EmailService
+from app.utils.export import export_transcript_to_docx, export_summary_to_docx
 from app.models.meeting import MEETING_TYPES
 
 
@@ -32,6 +34,93 @@ def _get_storage() -> StorageService:
 def _update_job(db, job_id: str, update: dict):
     """Update job document in MongoDB."""
     db.job.update_one({"_id": ObjectId(job_id)}, {"$set": update})
+
+
+def _auto_send_result_email(
+    db,
+    job_id: str,
+    recipient: str,
+    result_payload: dict,
+    meeting_type_id: int,
+    original_filename: str,
+) -> None:
+    """
+    Generate DOCX files and email them to the recipient.
+    Failure here must NOT fail the job — we only update email_status.
+    """
+    _update_job(db, job_id, {"email_status": "sending"})
+
+    email_svc = EmailService()
+    if not email_svc.is_configured:
+        logger.warning(f"Job {job_id}: SMTP not configured, skipping auto-send")
+        _update_job(db, job_id, {
+            "email_status": "failed",
+            "email_error": "SMTP not configured on server",
+        })
+        return
+
+    temp_dir = tempfile.mkdtemp(prefix="timsumv3_email_")
+    try:
+        file_name_no_ext = os.path.splitext(original_filename)[0] or "meeting"
+
+        # Generate summary DOCX
+        summary_path = os.path.join(temp_dir, f"{file_name_no_ext}_summary.docx")
+        export_summary_to_docx(
+            summary_text=result_payload["summary"],
+            output_path=summary_path,
+            speaker_summary=result_payload["transcript"]["speaker_summary"],
+            meeting_type_id=meeting_type_id,
+        )
+        docx_files = [(summary_path, f"{file_name_no_ext}_Summary")]
+
+        # Generate transcript DOCX
+        transcript_path = os.path.join(temp_dir, f"{file_name_no_ext}_transcript.docx")
+        export_transcript_to_docx(
+            segments=result_payload["transcript"]["segments"],
+            output_path=transcript_path,
+            audio_file=result_payload["audio_file"],
+            audio_length=result_payload["audio_length_seconds"],
+        )
+        docx_files.append((transcript_path, f"{file_name_no_ext}_Transcription"))
+
+        body = (
+            f"เรียน คุณผู้ใช้งาน\n\n"
+            f"เอกสารของคุณได้รับการประมวลผลเรียบร้อยแล้ว และระบบได้ส่งผลลัพธ์มาให้โดยอัตโนมัติ\n\n"
+            f"รายละเอียด:\n"
+            f"- ชื่อไฟล์: {original_filename}\n"
+            f"- จำนวนไฟล์แนบ: {len(docx_files)} ไฟล์ (Summary + Transcript)\n\n"
+            f"หมายเหตุ: หากต้องการผลลัพธ์พร้อมชื่อ Speaker ที่แก้ไขแล้ว สามารถเข้าไปแก้ที่หน้าเว็บและกด 'ส่งซ้ำ' ได้\n\n"
+            f"ขอบคุณที่ใช้บริการ TimSum V3"
+        )
+
+        ok = email_svc.send_email_with_attachments(
+            recipient_email=recipient,
+            subject=f"Document Processing Complete - {original_filename}",
+            body_text=body,
+            docx_files=docx_files,
+        )
+
+        if ok:
+            _update_job(db, job_id, {
+                "email_status": "sent",
+                "email_sent_at": datetime.now(timezone.utc),
+                "email_error": None,
+            })
+            logger.info(f"Job {job_id}: result email sent to {recipient}")
+        else:
+            _update_job(db, job_id, {
+                "email_status": "failed",
+                "email_error": "send_email_with_attachments returned False (check worker logs)",
+            })
+    except Exception as e:
+        logger.exception(f"Job {job_id}: email auto-send failed")
+        _update_job(db, job_id, {
+            "email_status": "failed",
+            "email_error": str(e),
+        })
+    finally:
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @celery_app.task(
@@ -49,6 +138,7 @@ def process_audio(
     original_filename: str,
     meeting_type_id: int,
     user_id: str,
+    email_recipient: str = "",
 ):
     """
     Process audio file: transcribe + diarize + summarize.
@@ -163,6 +253,20 @@ def process_audio(
         })
 
         logger.info(f"Job {job_id} completed successfully")
+
+        # Auto-send results via email if requested. This runs AFTER the job is
+        # marked completed so email failures cannot prevent the user from seeing
+        # results in the UI.
+        if email_recipient:
+            _auto_send_result_email(
+                db=db,
+                job_id=job_id,
+                recipient=email_recipient,
+                result_payload=job_result,
+                meeting_type_id=meeting_type_id,
+                original_filename=original_filename,
+            )
+
         return {"job_id": job_id, "session_id": session_id}
 
     except Exception as exc:

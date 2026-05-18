@@ -1,0 +1,44 @@
+# Development overrides — auto-merged with docker-compose.yml on `docker compose up`.
+# Provides hot-reload for frontend (Vite HMR) and backend (uvicorn --reload).
+#
+# To run the production stack instead (no overrides):
+#   docker compose -f docker-compose.yml up -d
+
+services:
+  # Frontend: replace nginx build with Vite dev server
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    # !override replaces (not merges) the base ports list so we don't keep
+    # the production 3000:80 mapping alongside the dev 5173:3000 one.
+    ports: !override
+      - "5173:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      # Proxy /api → backend container on the docker network
+      - VITE_API_PROXY=http://backend:8000
+      - CHOKIDAR_USEPOLLING=true
+    command: npm run dev -- --host 0.0.0.0
+    depends_on:
+      backend:
+        condition: service_started
+
+  # Backend: mount source + enable uvicorn auto-reload
+  backend:
+    volumes:
+      - ./backend:/app
+    environment:
+      # Force watchfiles to use polling — required on Windows/macOS bind mounts
+      - WATCHFILES_FORCE_POLLING=true
+    command: uvicorn api:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app
+
+  # Worker: mount source so code changes are visible after manual restart.
+  # Celery does not hot-reload safely (active tasks + GPU model state).
+  # After changing worker code: `docker compose restart worker`
+  worker:
+    volumes:
+      - ./backend:/app
+      - whisperx_cache:/app/.cache

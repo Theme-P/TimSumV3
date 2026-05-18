@@ -179,7 +179,14 @@ class MongoService:
 
     # ── Job Queue ──
 
-    def create_job(self, user_id: ObjectId, audio_file: str, meeting_type_id: int, audio_path: str) -> str:
+    def create_job(
+        self,
+        user_id: ObjectId,
+        audio_file: str,
+        meeting_type_id: int,
+        audio_path: str,
+        email_recipient: str = "",
+    ) -> str:
         """Create a new processing job. Returns job ID."""
         doc = {
             "user_id": user_id,
@@ -195,6 +202,11 @@ class MongoService:
             "celery_task_id": None,
             "created_at": datetime.now(timezone.utc),
             "completed_at": None,
+            # Email auto-send fields. email_status: null | queued | sending | sent | failed
+            "email_recipient": email_recipient or None,
+            "email_status": "queued" if email_recipient else None,
+            "email_error": None,
+            "email_sent_at": None,
         }
         result = self.db.job.insert_one(doc)
         return str(result.inserted_id)
@@ -210,10 +222,9 @@ class MongoService:
             return None
         doc["_id"] = str(doc["_id"])
         doc["user_id"] = str(doc["user_id"])
-        if doc.get("created_at"):
-            doc["created_at"] = doc["created_at"].isoformat()
-        if doc.get("completed_at"):
-            doc["completed_at"] = doc["completed_at"].isoformat()
+        for ts_field in ("created_at", "completed_at", "email_sent_at"):
+            if doc.get(ts_field):
+                doc[ts_field] = doc[ts_field].isoformat()
         return doc
 
     def get_job_result(self, job_id: str, user_id: ObjectId) -> Optional[dict]:

@@ -6,6 +6,7 @@ import ProcessingStatus from '../components/ProcessingStatus'
 import SpeakerIdentification from '../components/SpeakerIdentification'
 import ResultsTabs from '../components/ResultsTabs'
 import HistoryView from '../components/HistoryView'
+import SettingsModal from '../components/SettingsModal'
 
 const API_BASE = '/api'
 
@@ -37,10 +38,21 @@ function MainApp() {
     const [error, setError] = useState(null)
     const [showDropdown, setShowDropdown] = useState(false)
     const [activeView, setActiveView] = useState('upload')
+    const [emailRecipient, setEmailRecipient] = useState('')
+    const [emailSending, setEmailSending] = useState(false)
+    const [emailStatus, setEmailStatus] = useState(null)
+    const [autoEmailStatus, setAutoEmailStatus] = useState(null)
+    const [autoEmailError, setAutoEmailError] = useState(null)
+    const [showSettings, setShowSettings] = useState(false)
     const dropdownRef = useRef(null)
+    const resultLoadedRef = useRef(false)
 
     const { token, logout } = useAuth()
     const userInfo = token ? getUserInfo(token) : { initials: 'ผู้', username: '', email: '' }
+
+    useEffect(() => {
+        if (userInfo.email && !emailRecipient) setEmailRecipient(userInfo.email)
+    }, [userInfo.email])
 
     useEffect(() => {
         const handleClickOutside = (e) => {
@@ -53,12 +65,22 @@ function MainApp() {
     }, [])
 
     const handleFileSelect = (selectedFile) => {
+        if (sessionId) {
+            fetch(`${API_BASE}/session/${sessionId}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` },
+            }).catch(() => {})
+        }
         setFile(selectedFile)
         setError(null)
         setResult(null)
         setSpeakerMapping({})
         setSpeakerPanelCollapsed(false)
         setSessionId(null)
+        setEmailStatus(null)
+        setAutoEmailStatus(null)
+        setAutoEmailError(null)
+        resultLoadedRef.current = false
     }
 
     const STEP_MAP = {
@@ -82,9 +104,17 @@ function MainApp() {
 
             setProgress(job.progress || 0)
             setCurrentStep(STEP_MAP[job.current_step] ?? 0)
+            setAutoEmailStatus(job.email_status || null)
+            setAutoEmailError(job.email_error || null)
 
-            if (job.status === 'completed') {
-                // Fetch full result
+            if (job.status === 'failed') {
+                setError(job.error || 'เกิดข้อผิดพลาดในการประมวลผล')
+                setIsProcessing(false)
+                return
+            }
+
+            // Load full result once when pipeline completes.
+            if (job.status === 'completed' && !resultLoadedRef.current) {
                 const resultRes = await fetch(`${API_BASE}/jobs/${jobId}/result`, {
                     headers: { 'Authorization': `Bearer ${token}` },
                 })
@@ -95,17 +125,15 @@ function MainApp() {
                 setProgress(100)
                 setCurrentStep(5)
                 setIsProcessing(false)
-                return // stop polling
+                resultLoadedRef.current = true
             }
 
-            if (job.status === 'failed') {
-                setError(job.error || 'เกิดข้อผิดพลาดในการประมวลผล')
-                setIsProcessing(false)
-                return // stop polling
+            // Keep polling while pipeline runs OR while an auto-send email is still in flight.
+            const pipelineRunning = job.status !== 'completed' && job.status !== 'failed'
+            const emailInFlight = job.email_status === 'queued' || job.email_status === 'sending'
+            if (pipelineRunning || emailInFlight) {
+                setTimeout(() => pollJobStatus(jobId), 3000)
             }
-
-            // Still processing — poll again in 3 seconds
-            setTimeout(() => pollJobStatus(jobId), 3000)
         } catch (err) {
             setError(err.message || 'เกิดข้อผิดพลาดในการติดตามสถานะ')
             setIsProcessing(false)
@@ -122,11 +150,18 @@ function MainApp() {
         setSpeakerPanelCollapsed(false)
         setCurrentStep(0)
         setProgress(0)
+        setAutoEmailStatus(null)
+        setAutoEmailError(null)
+        setEmailStatus(null)
+        resultLoadedRef.current = false
 
         try {
             const formData = new FormData()
             formData.append('audio', file)
             formData.append('meeting_type_id', meetingType)
+            if (emailRecipient.trim()) {
+                formData.append('email_recipient', emailRecipient.trim())
+            }
 
             const response = await fetch(`${API_BASE}/transcribe-summarize`, {
                 method: 'POST',
@@ -151,6 +186,42 @@ function MainApp() {
     const handleMappingChange = useCallback((mapping) => {
         setSpeakerMapping(mapping)
     }, [])
+
+    const handleSendEmail = async () => {
+        if (!result || !emailRecipient.trim()) return
+        setEmailSending(true)
+        setEmailStatus(null)
+        try {
+            const fileNameNoExt = (file?.name || result.audio_file || 'meeting').replace(/\.[^.]+$/, '')
+            const payload = {
+                recipient_email: emailRecipient.trim(),
+                file_name: fileNameNoExt,
+                summary: displayResult.summary,
+                segments: displayResult.transcript.segments,
+                audio_file: displayResult.audio_file || '',
+                audio_length_seconds: displayResult.audio_length_seconds || 0,
+                speaker_summary: displayResult.transcript.speaker_summary,
+                meeting_type_id: meetingType,
+            }
+            const res = await fetch(`${API_BASE}/email-results`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify(payload),
+            })
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}))
+                throw new Error(err.detail || 'ส่งอีเมลไม่สำเร็จ')
+            }
+            setEmailStatus({ type: 'success', message: `ส่งไปยัง ${emailRecipient.trim()} สำเร็จ` })
+        } catch (err) {
+            setEmailStatus({ type: 'error', message: err.message || 'เกิดข้อผิดพลาดในการส่งอีเมล' })
+        } finally {
+            setEmailSending(false)
+        }
+    }
 
     const displayResult = useMemo(() => {
         if (!result) return null
@@ -221,7 +292,13 @@ function MainApp() {
                                     <span className="nav-dropdown-item-icon">👤</span>
                                     โปรไฟล์
                                 </button>
-                                <button className="nav-dropdown-item">
+                                <button
+                                    className="nav-dropdown-item"
+                                    onClick={() => {
+                                        setShowSettings(true)
+                                        setShowDropdown(false)
+                                    }}
+                                >
                                     <span className="nav-dropdown-item-icon">⚙️</span>
                                     ตั้งค่า
                                 </button>
@@ -263,23 +340,67 @@ function MainApp() {
                             />
                         </div>
 
-                        {/* ── Email section — ยังไม่เปิดใช้งาน ── */}
-                        {/*
+                        {/* ── Email section ── */}
                         <div className="upload-card">
                             <div className="email-section-label">
                                 <span className="email-dot" />
-                                ส่งผลลัพธ์ไปยังอีเมล
+                                ส่งผลลัพธ์ไปยังอีเมลอัตโนมัติ (ไม่บังคับ)
                             </div>
-                            <input
-                                type="email"
-                                className="email-input"
-                                placeholder="user@company.co.th"
-                            />
+                            <div className="email-input-row">
+                                <input
+                                    type="email"
+                                    className="email-input"
+                                    placeholder="user@company.co.th"
+                                    value={emailRecipient}
+                                    onChange={(e) => setEmailRecipient(e.target.value)}
+                                    disabled={emailSending}
+                                />
+                                <button
+                                    className="btn btn-primary email-send-btn"
+                                    onClick={handleSendEmail}
+                                    disabled={!result || !emailRecipient.trim() || emailSending}
+                                    title={result ? 'ส่งซ้ำพร้อมชื่อ Speaker ที่แก้ไข' : 'กดได้หลังประมวลผลเสร็จ'}
+                                >
+                                    {emailSending
+                                        ? '⏳ กำลังส่ง...'
+                                        : (autoEmailStatus === 'sent' ? '📧 ส่งซ้ำ' : '📧 ส่ง')}
+                                </button>
+                            </div>
+
+                            {/* Auto-send status (from worker, via job polling) */}
+                            {autoEmailStatus === 'queued' && (
+                                <p className="email-status email-status-info">
+                                    📬 ระบบจะส่งอีเมลให้อัตโนมัติเมื่อประมวลผลเสร็จ
+                                </p>
+                            )}
+                            {autoEmailStatus === 'sending' && (
+                                <p className="email-status email-status-info">
+                                    ⏳ กำลังส่งอีเมล...
+                                </p>
+                            )}
+                            {autoEmailStatus === 'sent' && (
+                                <p className="email-status email-status-success">
+                                    ✅ ส่งอีเมลให้ {emailRecipient} เรียบร้อยแล้ว
+                                </p>
+                            )}
+                            {autoEmailStatus === 'failed' && (
+                                <p className="email-status email-status-error">
+                                    ❌ ส่งอีเมลอัตโนมัติไม่สำเร็จ{autoEmailError ? ` — ${autoEmailError}` : ''}
+                                </p>
+                            )}
+
+                            {/* Manual resend status */}
+                            {emailStatus && (
+                                <p className={`email-status email-status-${emailStatus.type}`}>
+                                    {emailStatus.type === 'success' ? '✅' : '❌'} {emailStatus.message}
+                                </p>
+                            )}
+
                             <p className="email-hint">
-                                ระบบจะส่งไฟล์ทั้งสอง (transcript .txt + summary .pdf) เมื่อประมวลผลเสร็จ
+                                กรอกอีเมลก่อนกด "เริ่มประมวลผล" — ระบบจะส่งไฟล์ Transcript และ Summary (DOCX) ให้อัตโนมัติเมื่อเสร็จ
+                                {autoEmailStatus === 'sent' && ' ปุ่ม "ส่งซ้ำ" ใช้ส่งซ้ำหลังแก้ชื่อ Speaker'}
                             </p>
                         </div>
-                        */}
 
                         {/* Submit */}
                         <button
@@ -337,6 +458,12 @@ function MainApp() {
                     </>
                 )}
             </main>
+
+            <SettingsModal
+                isOpen={showSettings}
+                onClose={() => setShowSettings(false)}
+                userInfo={userInfo}
+            />
         </div>
     )
 }
