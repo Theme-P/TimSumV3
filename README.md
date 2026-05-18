@@ -86,6 +86,13 @@ docker compose up -d --build
 # MinIO:     http://localhost:9001
 ```
 
+### 3. Login
+ระบบจะสร้าง Admin user ให้อัตโนมัติเมื่อรันครั้งแรก สามารถใช้ข้อมูลนี้เพื่อเข้าสู่ระบบ:
+- **Email:** `admin@timsumv3.local`
+- **Password:** `TimSum@Admin2026`
+
+*(สามารถเปลี่ยนรหัสผ่านนี้ได้ในไฟล์ `.env` ผ่านตัวแปร `ADMIN_EMAIL` และ `ADMIN_PASS`)*
+
 ### Prerequisites
 
 - Docker + Docker Compose
