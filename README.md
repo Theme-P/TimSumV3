@@ -91,7 +91,7 @@ docker compose up -d --build
 - **Email:** `admin@timsumv3.local`
 - **Password:** `TimSum@Admin2026`
 
-*(สามารถเปลี่ยนรหัสผ่านนี้ได้ในไฟล์ `.env` ผ่านตัวแปร `ADMIN_EMAIL` และ `ADMIN_PASS`)*
+*(สามารถเปลี่ยนรหัสผ่านนี้ได้ในไฟล์ `.env` หรือตั้งค่าระบบได้ผ่านตัวแปร `ADMIN_EMAIL` และ `ADMIN_PASS`)*
 
 ### Prerequisites
 
