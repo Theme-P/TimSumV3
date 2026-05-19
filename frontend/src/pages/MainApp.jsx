@@ -7,6 +7,7 @@ import SpeakerIdentification from '../components/SpeakerIdentification'
 import ResultsTabs from '../components/ResultsTabs'
 import HistoryView from '../components/HistoryView'
 import SettingsModal from '../components/SettingsModal'
+import ProfileModal from '../components/ProfileModal'
 import PackageBadge from '../components/PackageBadge'
 
 const API_BASE = '/api'
@@ -46,6 +47,7 @@ function MainApp() {
     const [autoEmailStatus, setAutoEmailStatus] = useState(null)
     const [autoEmailError, setAutoEmailError] = useState(null)
     const [showSettings, setShowSettings] = useState(false)
+    const [showProfile, setShowProfile] = useState(false)
     const dropdownRef = useRef(null)
     const resultLoadedRef = useRef(false)
 
@@ -295,7 +297,13 @@ function MainApp() {
                                     <span className="nav-dropdown-email">{userInfo.email}</span>
                                 </div>
                                 <div className="nav-dropdown-divider" />
-                                <button className="nav-dropdown-item">
+                                <button
+                                    className="nav-dropdown-item"
+                                    onClick={() => {
+                                        setShowProfile(true)
+                                        setShowDropdown(false)
+                                    }}
+                                >
                                     <span className="nav-dropdown-item-icon">👤</span>
                                     โปรไฟล์
                                 </button>
@@ -466,11 +474,16 @@ function MainApp() {
                 )}
             </main>
 
+            <ProfileModal
+                isOpen={showProfile}
+                onClose={() => setShowProfile(false)}
+                userInfo={userInfo}
+                token={token}
+            />
+
             <SettingsModal
                 isOpen={showSettings}
                 onClose={() => setShowSettings(false)}
-                userInfo={userInfo}
-                token={token}
             />
         </div>
     )
