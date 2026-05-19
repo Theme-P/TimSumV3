@@ -293,6 +293,7 @@ def _consolidate_summaries(
     chunk_summaries: list[str],
     classification: Dict,
     meeting_type_id: int,
+    custom_prompt: str = "",
 ) -> str:
     """Consolidate multiple chunk summaries into one final summary."""
     meeting_type = classification.get("meeting_type", "general_meeting")
@@ -316,6 +317,9 @@ def _consolidate_summaries(
 {focus_prompt}
 
 คุณกำลังสร้างสรุปขั้นสุดท้ายจากการประชุมยาว กรุณาให้ความสำคัญกับความครบถ้วนและการไม่สูญหายของข้อมูลสำคัญ"""
+
+    if custom_prompt:
+        system += f"\n\n**คำสั่งเพิ่มเติมจากผู้ใช้:**\n{custom_prompt}"
 
     user = f"""กรุณาสร้างสรุปการประชุมฉบับสมบูรณ์จากสรุปส่วนต่างๆ ต่อไปนี้:
 
@@ -376,6 +380,7 @@ def summarize_with_diarization(
     speaker_summary: dict,
     meeting_type_id: int = 0,
     language: str = "Thai",
+    custom_prompt: str = "",
 ) -> str:
     """
     Summarize transcription with speaker diarization data.
@@ -399,16 +404,19 @@ def summarize_with_diarization(
             "key_indicators": [],
         }
 
+    if custom_prompt:
+        logger.info(f"Custom prompt provided ({len(custom_prompt)} chars)")
+
     # Route: hierarchical for long transcripts
     if len(transcript_with_speakers) > HIERARCHICAL_THRESHOLD:
         logger.info(f"Using HIERARCHICAL approach ({len(transcript_with_speakers)} chars)")
         return _summarize_hierarchical(
-            transcript_with_speakers, speaker_summary, meeting_type_id, classification
+            transcript_with_speakers, speaker_summary, meeting_type_id, classification, custom_prompt
         )
 
     # Standard: single-call approach for shorter transcripts
     return _summarize_standard(
-        transcript_with_speakers, speaker_summary, meeting_type_id, classification
+        transcript_with_speakers, speaker_summary, meeting_type_id, classification, custom_prompt
     )
 
 
@@ -417,6 +425,7 @@ def _summarize_standard(
     speaker_summary: dict,
     meeting_type_id: int,
     classification: Dict,
+    custom_prompt: str = "",
 ) -> str:
     """Standard single-call summary for shorter transcripts."""
     speakers_time = speaker_summary.get('speaking_time', {})
@@ -464,6 +473,9 @@ def _summarize_standard(
 - เน้นความละเอียดในประเด็นหัวใจหลักของประเภทการประชุมนี้
 - สรุปมติท้ายสุด"""
 
+    if custom_prompt:
+        system += f"\n\n**คำสั่งเพิ่มเติมจากผู้ใช้:**\n{custom_prompt}"
+
     user = f"""**ข้อมูลผู้พูด:**
 {speaker_info}
 
@@ -479,6 +491,7 @@ def _summarize_hierarchical(
     speaker_summary: dict,
     meeting_type_id: int,
     classification: Dict,
+    custom_prompt: str = "",
 ) -> str:
     """Hierarchical multi-stage summary for long transcripts."""
     logger.info("Starting hierarchical summarization")
@@ -503,7 +516,7 @@ def _summarize_hierarchical(
 
     # Step 3: Consolidate into final summary
     logger.info(f"Consolidating {len(chunk_summaries)} chunk summaries")
-    final = _consolidate_summaries(chunk_summaries, classification, meeting_type_id)
+    final = _consolidate_summaries(chunk_summaries, classification, meeting_type_id, custom_prompt)
 
     logger.info(f"Hierarchical summary complete ({len(final)} chars)")
     return final

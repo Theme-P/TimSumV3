@@ -81,7 +81,7 @@ class TranscribeSummaryPipeline:
         self.timing['model_load'] = time.time() - start
         logger.info(f"Model loaded in {self.timing['model_load']:.2f}s")
     
-    def process(self, audio_file: str, meeting_type_id: int = 0, on_progress=None) -> Dict[str, Any]:
+    def process(self, audio_file: str, meeting_type_id: int = 0, on_progress=None, custom_prompt: str = "") -> Dict[str, Any]:
         """
         Process audio file: transcribe and summarize.
 
@@ -89,6 +89,7 @@ class TranscribeSummaryPipeline:
             audio_file: Path to audio file
             meeting_type_id: Meeting type ID (0=auto-detect, 1-11=specific type)
             on_progress: Optional callback(step: str, progress: int) for status updates
+            custom_prompt: Optional user instruction to append to summary prompt
 
         Returns structured output with:
         - Full transcript with segments
@@ -278,9 +279,10 @@ class TranscribeSummaryPipeline:
         logger.info(f"Running AI Summary ({meeting_info['thai']})...")
         summary_start = time.time()
         summary_text = summarize_with_diarization(
-            transcript_with_speakers, 
+            transcript_with_speakers,
             speaker_summary,
-            meeting_type_id=meeting_type_id
+            meeting_type_id=meeting_type_id,
+            custom_prompt=custom_prompt,
         )
         summary_time = time.time() - summary_start
         logger.info(f"Summary API completed in {summary_time:.2f}s")

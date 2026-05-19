@@ -58,11 +58,11 @@
 | 8a | แนบ clip ตัวอย่างเสียง (voice enrollment) | 🔴 ไม่มี | กลาง |
 | 8b | ใช้ clip เสียงที่เคยให้ไว้แล้ว (voice library) | 🔴 ไม่มี | กลาง |
 | 9a | Auto mode summary [default] | ✅ เสร็จแล้ว | - |
-| 9b | ผู้ใช้ prompt เพิ่มเพื่อกำหนดรูปแบบสรุป | 🔴 ไม่มี | กลาง |
+| 9b | ผู้ใช้ prompt เพิ่มเพื่อกำหนดรูปแบบสรุป | ✅ เสร็จแล้ว | กลาง |
 | 10 | PDPA — 3 ระดับ user (superadmin/admin/user) | ✅ เสร็จแล้ว | สูง |
 | 11 | Encrypt/tokenize ข้อมูลส่วนบุคคลใน DB | 🔴 ไม่มี | สูง |
 
-**สรุป:** 10 features เสร็จแล้ว, 0 features มีบางส่วน, 3 features ต้องทำใหม่
+**สรุป:** 11 features เสร็จแล้ว, 0 features มีบางส่วน, 2 features ต้องทำใหม่
 
 ---
 
@@ -345,7 +345,7 @@
 
 ---
 
-### Phase 5: Custom Summary Prompt 🟡 (Priority: กลาง)
+### Phase 5: Custom Summary Prompt ✅ COMPLETED (2026-05-19)
 
 **เหตุผล:** ให้ user ปรับแต่ง output ได้ — เพิ่ม flexibility
 
@@ -447,7 +447,7 @@ Phase 7 (Google SSO) ────────── standalone (low priority)
 | ~~3~~ | ~~Phase 1.2: Admin Approval~~ | ~~กลาง~~ | ✅ เสร็จแล้ว |
 | 4 | Phase 3.2: PII Encryption | กลาง-ใหญ่ | PDPA compliance |
 | ~~5~~ | ~~Phase 2.1-2.3: Package System~~ | ~~ใหญ่~~ | ✅ เสร็จแล้ว |
-| 6 | Phase 5: Custom Prompt | เล็ก | Quick win, high value |
+| ~~6~~ | ~~Phase 5: Custom Prompt~~ | ~~เล็ก~~ | ✅ เสร็จแล้ว |
 | 7 | Phase 6: Profile & Settings | กลาง | Better UX |
 | 8 | Phase 4: Voice Enrollment | ใหญ่ | Advanced feature |
 | 9 | Phase 7: Google SSO | กลาง | Nice to have |
@@ -578,3 +578,40 @@ Phase 7 (Google SSO) ────────── standalone (low priority)
 - **Monthly auto-reset** — `usage_reset_month` (YYYY-MM format) in `user_package` document; counters reset on first access of new month.
 - **Atomic limit enforcement** — `check_package_limits()` runs before upload, returns 403 with Thai error messages when limits exceeded.
 - **Startup seeding** — `_seed_packages()` uses `upsert_package()` to be idempotent; safe to run on every restart.
+
+### Phase 6 — In Progress
+
+**Scope:** User Profile & Settings
+
+**Frontend changes:**
+| File | Change |
+|------|--------|
+| `frontend/src/components/ProfileModal.jsx` | **New file.** Extracted from `SettingsModal`. Contains "บัญชีผู้ใช้" and "แพ็คเกจ & การใช้งาน" sections. |
+| `frontend/src/components/SettingsModal.jsx` | Removed account section, package/usage section, and `UsageBar`. Now only contains theme and about sections. |
+| `frontend/src/pages/MainApp.jsx` | Imported and rendered `ProfileModal`. Added `showProfile` state and wired "โปรไฟล์" button. |
+
+### Phase 5 — Completed 2026-05-19
+
+**Scope:** Custom Summary Prompt — collapsible textarea for user-defined instructions appended to GPT-4.1 summary prompt. Gated by package permission (`custom_prompt_enabled`).
+
+**Backend changes:**
+| File | Change |
+|------|--------|
+| `backend/app/models/package.py` | Added `custom_prompt_enabled: bool = False` to `PackageLimits`. Enabled for TimSumPro, TimSumEnterprise, TimSumAdmin, and TimSumSuperAdmin packages. |
+| `backend/api.py` | Added `custom_prompt` Form parameter to `POST /api/transcribe-summarize`. Validation: max 500 chars. Passed to Celery task. |
+| `backend/app/tasks/transcription.py` | Added `custom_prompt` parameter to `process_audio()`, forwarded to `pipeline.process()`. |
+| `backend/app/services/pipeline.py` | Added `custom_prompt` parameter to `TranscribeSummaryPipeline.process()`, forwarded to `summarize_with_diarization()`. |
+| `backend/app/services/summarizer.py` | Added `custom_prompt` parameter to `summarize_with_diarization()`, `_summarize_standard()`, `_summarize_hierarchical()`, and `_consolidate_summaries()`. Appends as "**คำสั่งเพิ่มเติมจากผู้ใช้:**" section to system prompt when provided. |
+
+**Frontend changes:**
+| File | Change |
+|------|--------|
+| `frontend/src/components/CustomPromptInput.jsx` | **New file.** Collapsible textarea with 500-char limit, character counter, hint text. Hidden by default, expands on click. |
+| `frontend/src/pages/MainApp.jsx` | Added `customPrompt` and `customPromptEnabled` state. Fetches package limits on mount to check `custom_prompt_enabled` permission. Renders `CustomPromptInput` inside meeting type card (only when package allows). Sends `custom_prompt` in FormData on submit. |
+| `frontend/src/styles/index.css` | Added `.custom-prompt-*` styles: toggle button, textarea, footer with hint and character count. |
+
+**Key design decisions:**
+- **Package-gated** — `custom_prompt_enabled` is `false` for Basic tier, `true` for Pro+. Frontend hides the input entirely for Basic users.
+- **Appended to system prompt** — Custom prompt is injected as a clearly labeled section at the end of the system prompt, so it influences but doesn't override the meeting-type-specific structure.
+- **Both summarization paths** — Custom prompt applies to both standard (single-call) and hierarchical (multi-chunk consolidation) paths.
+- **Server-side validation** — 500-char limit enforced both client-side and server-side (API returns 400 if exceeded).

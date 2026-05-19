@@ -9,6 +9,7 @@ import HistoryView from '../components/HistoryView'
 import SettingsModal from '../components/SettingsModal'
 import ProfileModal from '../components/ProfileModal'
 import PackageBadge from '../components/PackageBadge'
+import CustomPromptInput from '../components/CustomPromptInput'
 
 const API_BASE = '/api'
 
@@ -48,6 +49,8 @@ function MainApp() {
     const [autoEmailError, setAutoEmailError] = useState(null)
     const [showSettings, setShowSettings] = useState(false)
     const [showProfile, setShowProfile] = useState(false)
+    const [customPrompt, setCustomPrompt] = useState('')
+    const [customPromptEnabled, setCustomPromptEnabled] = useState(false)
     const dropdownRef = useRef(null)
     const resultLoadedRef = useRef(false)
 
@@ -57,6 +60,20 @@ function MainApp() {
     useEffect(() => {
         if (userInfo.email && !emailRecipient) setEmailRecipient(userInfo.email)
     }, [userInfo.email])
+
+    useEffect(() => {
+        if (!token) return
+        fetch(`${API_BASE}/user/package`, {
+            headers: { 'Authorization': `Bearer ${token}` },
+        })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success && data.package?.package?.limits) {
+                    setCustomPromptEnabled(!!data.package.package.limits.custom_prompt_enabled)
+                }
+            })
+            .catch(() => {})
+    }, [token])
 
     useEffect(() => {
         const handleClickOutside = (e) => {
@@ -165,6 +182,9 @@ function MainApp() {
             formData.append('meeting_type_id', meetingType)
             if (emailRecipient.trim()) {
                 formData.append('email_recipient', emailRecipient.trim())
+            }
+            if (customPrompt.trim()) {
+                formData.append('custom_prompt', customPrompt.trim())
             }
 
             const response = await fetch(`${API_BASE}/transcribe-summarize`, {
@@ -353,6 +373,13 @@ function MainApp() {
                                 onChange={setMeetingType}
                                 disabled={isProcessing}
                             />
+                            {customPromptEnabled && (
+                                <CustomPromptInput
+                                    value={customPrompt}
+                                    onChange={setCustomPrompt}
+                                    disabled={isProcessing}
+                                />
+                            )}
                         </div>
 
                         {/* ── Email section ── */}

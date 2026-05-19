@@ -30,6 +30,7 @@ DEFAULT_PACKAGES = [
             "max_audio_minutes_per_file": 90,
             "max_files_per_month": 20,
             "ai_summary_per_month": 20,
+            "custom_prompt_enabled": True,
         },
         "tier": 1,
     },
@@ -43,6 +44,7 @@ DEFAULT_PACKAGES = [
             "max_audio_minutes_per_file": 300,
             "max_files_per_month": 250,
             "ai_summary_per_month": 250,
+            "custom_prompt_enabled": True,
         },
         "tier": 2,
     },
@@ -56,6 +58,7 @@ DEFAULT_PACKAGES = [
             "max_audio_minutes_per_file": 300,
             "max_files_per_month": 250,
             "ai_summary_per_month": 250,
+            "custom_prompt_enabled": True,
         },
         "tier": 2,
     },
@@ -72,6 +75,7 @@ ADMIN_PACKAGE = {
         "max_audio_minutes_per_file": 99999,
         "max_files_per_month": 99999,
         "ai_summary_per_month": 99999,
+        "custom_prompt_enabled": True,
     },
     "tier": 10,
 }
@@ -86,6 +90,7 @@ SUPERADMIN_PACKAGE = {
         "max_audio_minutes_per_file": 99999,
         "max_files_per_month": 99999,
         "ai_summary_per_month": 99999,
+        "custom_prompt_enabled": True,
     },
     "tier": 99,
 }
@@ -96,6 +101,7 @@ class PackageLimits(BaseModel):
     max_audio_minutes_per_file: int = 30
     max_files_per_month: int = 6
     ai_summary_per_month: int = 6
+    custom_prompt_enabled: bool = False
 
 
 class Package(BaseModel):

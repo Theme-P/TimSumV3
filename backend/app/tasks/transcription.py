@@ -139,6 +139,7 @@ def process_audio(
     meeting_type_id: int,
     user_id: str,
     email_recipient: str = "",
+    custom_prompt: str = "",
 ):
     """
     Process audio file: transcribe + diarize + summarize.
@@ -174,7 +175,7 @@ def process_audio(
 
         # Run the pipeline with live progress reporting
         pipeline = TranscribeSummaryPipeline()
-        result = pipeline.process(local_audio, meeting_type_id=meeting_type_id, on_progress=on_progress)
+        result = pipeline.process(local_audio, meeting_type_id=meeting_type_id, on_progress=on_progress, custom_prompt=custom_prompt)
 
         # Pipeline completed — upload clips to MinIO
         _update_job(db, job_id, {"current_step": "saving", "progress": 95})

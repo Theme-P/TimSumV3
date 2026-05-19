@@ -255,6 +255,7 @@ async def transcribe_summarize(
     audio: UploadFile = File(..., description="Audio file to transcribe"),
     meeting_type_id: int = Form(0, description="Meeting type ID (0=auto-detect, 1-11=specific type)"),
     email_recipient: str = Form("", description="Optional: email to auto-send results to"),
+    custom_prompt: str = Form("", description="Optional: custom instruction for summary (max 500 chars)"),
     user: UserData = Depends(get_current_user),
     mongo_service: MongoService = Depends(get_mongo_service),
     storage: StorageService = Depends(get_storage),
@@ -277,6 +278,11 @@ async def transcribe_summarize(
     email_recipient = (email_recipient or "").strip()
     if email_recipient and ("@" not in email_recipient or "." not in email_recipient.split("@")[-1]):
         raise HTTPException(status_code=400, detail="Invalid email_recipient format")
+
+    # Validate custom prompt
+    custom_prompt = (custom_prompt or "").strip()
+    if len(custom_prompt) > 500:
+        raise HTTPException(status_code=400, detail="custom_prompt ต้องไม่เกิน 500 ตัวอักษร")
 
     # Validate file type
     allowed_extensions = ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.webm', '.mp4']
@@ -329,6 +335,7 @@ async def transcribe_summarize(
         meeting_type_id=meeting_type_id,
         user_id=str(user.id),
         email_recipient=email_recipient,
+        custom_prompt=custom_prompt,
     )
 
     # Increment usage counters (files + ai summaries)
