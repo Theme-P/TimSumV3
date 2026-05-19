@@ -43,7 +43,7 @@
 - Monthly usage auto-reset
 - Atomic limit enforcement (403 เมื่อเกิน quota)
 - Dynamic Package Badge ใน navbar
-- Usage progress bars ใน Settings (เตือนเมื่อ ≥ 80%)
+- Usage progress bars ใน Profile (เตือนเมื่อ ≥ 80%)
 
 ### 🎙️ Audio Processing Pipeline
 - Async processing ด้วย Celery + Redis (polling 5 steps)
@@ -239,7 +239,7 @@ sudo docker compose -f docker-compose.yml up -d
 | 3 | PDPA — PII Encryption at Rest | 🔴 Todo |
 | 4 | Voice Enrollment (Speaker Library) | 🔴 Todo |
 | 5 | Custom Summary Prompt | 🔴 Todo |
-| 6 | User Profile & Password Management | 🔴 Todo |
+| 6 | User Profile & Settings | 🟡 In Progress |
 | 7 | Google SSO | 🟠 Low priority |
 
 ดูรายละเอียดแผนงานเต็มที่ [ARTIFACT_PLANNING.md](./ARTIFACT_PLANNING.md)
