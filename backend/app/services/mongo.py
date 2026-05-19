@@ -6,7 +6,7 @@ from typing import Optional
 
 from bson import ObjectId
 from pymongo import MongoClient
-from app.models.user import User, UserData, Quota
+from app.models.user import User, UserData, Quota, USER_STATUS_APPROVED, VALID_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ class MongoService:
         self.db = self.client[db_name]
 
         # Explicitly create collections if they don't exist
-        required_collections = ["user", "quota", "session", "job"]
+        required_collections = ["user", "quota", "session", "job", "package", "user_package"]
         existing_collections = self.db.list_collection_names()
 
         for collection in required_collections:
@@ -38,14 +38,21 @@ class MongoService:
         return secrets.compare_digest(test_hash, hashed_password)
 
     def authenticate_user(self, email: str, password: str) -> Optional[User]:
-        """Authenticate user with email and password."""
+        """Authenticate user with email and password. Only approved users can login."""
         user_data = self.db.user.find_one({"email": email})
         if not user_data:
             return None
 
-        if self._verify_password(password, user_data["password"], user_data["salt"]):
-            return User(**user_data)
-        return None
+        if not self._verify_password(password, user_data["password"], user_data["salt"]):
+            return None
+
+        user = User(**user_data)
+        # Check user status — only approved users can login
+        status = user_data.get("status", USER_STATUS_APPROVED)
+        if status != USER_STATUS_APPROVED:
+            return None
+
+        return user
 
     def get_user_by_id(self, user_id: str) -> User:
         """Retrieve a user by their ID."""
@@ -136,6 +143,234 @@ class MongoService:
         if result.deleted_count == 0:
             msg = "Quota not found for user"
             raise ValueError(msg)
+
+    # ── User Status & Admin Management ──
+
+    def get_user_status(self, email: str) -> Optional[str]:
+        """Get user status by email. Returns None if user not found."""
+        user_data = self.db.user.find_one({"email": email}, {"status": 1})
+        if not user_data:
+            return None
+        return user_data.get("status", USER_STATUS_APPROVED)
+
+    def register_public_user(self, user: User) -> str:
+        """Register a new public user with pending status. Returns user_id."""
+        if self.db.user.find_one({"email": user.email}):
+            msg = "User with this email already exists"
+            raise ValueError(msg)
+
+        password_str = user.password.get_secret_value()
+        hashed_password, salt = self._hash_password(password_str)
+
+        user_data = user.model_dump(by_alias=True)
+        user_data["password"] = hashed_password
+        user_data["salt"] = salt
+        user_data["status"] = "pending"
+        user_data["registered_at"] = datetime.now(timezone.utc)
+
+        result = self.db.user.insert_one(user_data)
+        return str(result.inserted_id)
+
+    def get_users_by_status(self, status: Optional[str] = None, limit: int = 100) -> list:
+        """Get users filtered by status. If status is None, return all."""
+        query = {}
+        if status and status in VALID_STATUSES:
+            query["status"] = status
+
+        cursor = (
+            self.db.user.find(query, {"password": 0, "salt": 0})
+            .sort("registered_at", -1)
+            .limit(limit)
+        )
+        users = []
+        for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            for ts_field in ("registered_at", "approved_at"):
+                if doc.get(ts_field):
+                    doc[ts_field] = doc[ts_field].isoformat()
+            users.append(doc)
+        return users
+
+    def update_user_status(self, user_id: str, status: str, admin_id: str = None) -> bool:
+        """Update user status (approve/reject/suspend). Returns True if updated."""
+        if status not in VALID_STATUSES:
+            msg = f"Invalid status: {status}"
+            raise ValueError(msg)
+
+        update_fields = {"status": status}
+        if status == USER_STATUS_APPROVED and admin_id:
+            update_fields["approved_at"] = datetime.now(timezone.utc)
+            update_fields["approved_by"] = admin_id
+
+        result = self.db.user.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": update_fields},
+        )
+        return result.matched_count > 0
+
+    def get_user_count_by_status(self) -> dict:
+        """Get count of users grouped by status."""
+        pipeline = [
+            {"$group": {"_id": "$status", "count": {"$sum": 1}}}
+        ]
+        result = {s: 0 for s in VALID_STATUSES}
+        for doc in self.db.user.aggregate(pipeline):
+            status = doc["_id"] or USER_STATUS_APPROVED
+            result[status] = doc["count"]
+        return result
+
+    # ── Package ──
+
+    def upsert_package(self, pkg_data: dict) -> str:
+        """Insert or update a package by name. Returns package_id."""
+        existing = self.db.package.find_one({"name": pkg_data["name"]})
+        if existing:
+            self.db.package.update_one({"_id": existing["_id"]}, {"$set": pkg_data})
+            return str(existing["_id"])
+        pkg_data.setdefault("created_at", datetime.now(timezone.utc))
+        result = self.db.package.insert_one(pkg_data)
+        return str(result.inserted_id)
+
+    def get_all_packages(self, active_only: bool = True) -> list:
+        """Get all packages sorted by tier."""
+        query = {"is_active": True} if active_only else {}
+        cursor = self.db.package.find(query).sort("tier", 1)
+        packages = []
+        for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            if doc.get("created_at"):
+                doc["created_at"] = doc["created_at"].isoformat()
+            packages.append(doc)
+        return packages
+
+    def get_package_by_id(self, package_id: str) -> Optional[dict]:
+        """Get a single package by ID."""
+        doc = self.db.package.find_one({"_id": ObjectId(package_id)})
+        if not doc:
+            return None
+        doc["_id"] = str(doc["_id"])
+        return doc
+
+    def get_package_by_name(self, name: str) -> Optional[dict]:
+        """Get a single package by name."""
+        doc = self.db.package.find_one({"name": name})
+        if not doc:
+            return None
+        doc["_id"] = str(doc["_id"])
+        return doc
+
+    # ── User Package ──
+
+    def assign_user_package(self, user_id: str, package_id: str, assigned_by: str = None) -> str:
+        """Assign a package to a user (replaces existing). Returns user_package id."""
+        now = datetime.now(timezone.utc)
+        current_month = now.strftime("%Y-%m")
+
+        # Remove existing assignment
+        self.db.user_package.delete_many({"user_id": ObjectId(user_id)})
+
+        doc = {
+            "user_id": ObjectId(user_id),
+            "package_id": ObjectId(package_id),
+            "status": "active",
+            "started_at": now,
+            "expires_at": None,
+            "usage": {
+                "files_this_month": 0,
+                "ai_summaries_this_month": 0,
+                "transcription_minutes_this_month": 0,
+            },
+            "usage_reset_month": current_month,
+            "assigned_by": assigned_by,
+        }
+        result = self.db.user_package.insert_one(doc)
+        return str(result.inserted_id)
+
+    def get_user_package(self, user_id: str) -> Optional[dict]:
+        """Get user's current package assignment with package details."""
+        up = self.db.user_package.find_one({"user_id": ObjectId(user_id)})
+        if not up:
+            return None
+
+        # Auto-reset usage if month changed
+        now = datetime.now(timezone.utc)
+        current_month = now.strftime("%Y-%m")
+        if up.get("usage_reset_month") != current_month:
+            self.db.user_package.update_one(
+                {"_id": up["_id"]},
+                {"$set": {
+                    "usage.files_this_month": 0,
+                    "usage.ai_summaries_this_month": 0,
+                    "usage.transcription_minutes_this_month": 0,
+                    "usage_reset_month": current_month,
+                }},
+            )
+            up["usage"] = {"files_this_month": 0, "ai_summaries_this_month": 0, "transcription_minutes_this_month": 0}
+            up["usage_reset_month"] = current_month
+
+        # Join with package details
+        pkg = self.db.package.find_one({"_id": up["package_id"]})
+        result = {
+            "_id": str(up["_id"]),
+            "user_id": str(up["user_id"]),
+            "package_id": str(up["package_id"]),
+            "status": up.get("status", "active"),
+            "usage": up.get("usage", {}),
+            "usage_reset_month": up.get("usage_reset_month"),
+            "started_at": up["started_at"].isoformat() if up.get("started_at") else None,
+            "assigned_by": up.get("assigned_by"),
+        }
+        if pkg:
+            result["package"] = {
+                "_id": str(pkg["_id"]),
+                "name": pkg.get("name"),
+                "description": pkg.get("description"),
+                "price": pkg.get("price"),
+                "billing_cycle": pkg.get("billing_cycle"),
+                "limits": pkg.get("limits", {}),
+                "tier": pkg.get("tier", 0),
+            }
+        return result
+
+    def increment_usage(self, user_id: str, files: int = 0, ai_summaries: int = 0, transcription_minutes: float = 0):
+        """Atomically increment usage counters for a user."""
+        inc = {}
+        if files:
+            inc["usage.files_this_month"] = files
+        if ai_summaries:
+            inc["usage.ai_summaries_this_month"] = ai_summaries
+        if transcription_minutes:
+            inc["usage.transcription_minutes_this_month"] = transcription_minutes
+        if inc:
+            self.db.user_package.update_one(
+                {"user_id": ObjectId(user_id)},
+                {"$inc": inc},
+            )
+
+    def check_package_limits(self, user_id: str) -> dict:
+        """Check if user is within package limits. Returns {allowed, reason, usage, limits}."""
+        up = self.get_user_package(user_id)
+        if not up or not up.get("package"):
+            return {"allowed": False, "reason": "ไม่พบแพ็กเกจ กรุณาติดต่อผู้ดูแลระบบ"}
+
+        usage = up["usage"]
+        limits = up["package"]["limits"]
+
+        if usage.get("files_this_month", 0) >= limits.get("max_files_per_month", 0):
+            return {"allowed": False, "reason": "จำนวนไฟล์ที่อัปโหลดเดือนนี้ครบแล้ว"}
+
+        if usage.get("ai_summaries_this_month", 0) >= limits.get("ai_summary_per_month", 0):
+            return {"allowed": False, "reason": "จำนวน AI สรุปเดือนนี้ครบแล้ว"}
+
+        if usage.get("transcription_minutes_this_month", 0) >= limits.get("transcription_minutes_per_month", 0):
+            return {"allowed": False, "reason": "นาทีการถอดเสียงเดือนนี้ครบแล้ว"}
+
+        return {
+            "allowed": True,
+            "usage": usage,
+            "limits": limits,
+            "max_audio_minutes_per_file": limits.get("max_audio_minutes_per_file", 30),
+        }
 
     # ── Session / History ──
 

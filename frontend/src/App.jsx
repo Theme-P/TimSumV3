@@ -4,7 +4,9 @@ import { AuthProvider } from './contexts/AuthContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import Login from './pages/Login';
+import Register from './pages/Register';
 import MainApp from './pages/MainApp';
+import AdminDashboard from './pages/AdminDashboard';
 
 function App() {
     return (
@@ -13,17 +15,28 @@ function App() {
             <Router>
                 <Routes>
                     <Route path="/login" element={<Login />} />
-                    
+                    <Route path="/register" element={<Register />} />
+
                     {/* Protected routes */}
-                    <Route 
-                        path="/" 
+                    <Route
+                        path="/"
                         element={
                             <ProtectedRoute>
                                 <MainApp />
                             </ProtectedRoute>
-                        } 
+                        }
                     />
-                    
+
+                    {/* Admin route */}
+                    <Route
+                        path="/admin"
+                        element={
+                            <ProtectedRoute requiredRole="admin">
+                                <AdminDashboard />
+                            </ProtectedRoute>
+                        }
+                    />
+
                     {/* Catch all redirect to root */}
                     <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>

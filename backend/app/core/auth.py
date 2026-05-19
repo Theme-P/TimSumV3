@@ -37,7 +37,7 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Secur
         raise HTTPException(status_code=401, detail="Token is invalid!")
 
 def get_current_admin(user: UserData = Security(get_current_user)) -> UserData:
-    """Check if the current user has admin role."""
-    if user.role != "admin":
+    """Check if the current user has admin or superadmin role."""
+    if user.role not in ("admin", "superadmin"):
         raise HTTPException(status_code=403, detail="You do not have permission to access this resource!")
     return user

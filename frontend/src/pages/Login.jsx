@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import '../styles/Login.css';
 
@@ -136,7 +136,7 @@ const Login = () => {
 
                     <p className="login-register-text">
                         ยังไม่มีบัญชี?{' '}
-                        <a href="#" className="login-register-link">สมัครสมาชิก</a>
+                        <Link to="/register" className="login-register-link">สมัครสมาชิก</Link>
                     </p>
                 </div>
             </div>

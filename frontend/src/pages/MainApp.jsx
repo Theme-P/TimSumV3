@@ -7,6 +7,7 @@ import SpeakerIdentification from '../components/SpeakerIdentification'
 import ResultsTabs from '../components/ResultsTabs'
 import HistoryView from '../components/HistoryView'
 import SettingsModal from '../components/SettingsModal'
+import PackageBadge from '../components/PackageBadge'
 
 const API_BASE = '/api'
 
@@ -19,9 +20,10 @@ function getUserInfo(token) {
             initials: name.substring(0, 2).toUpperCase(),
             username: payload.username || '',
             email: payload.email || '',
+            role: payload.role || 'user',
         }
     } catch {
-        return { initials: 'ผู้', username: '', email: '' }
+        return { initials: 'ผู้', username: '', email: '', role: 'user' }
     }
 }
 
@@ -271,9 +273,14 @@ function MainApp() {
                     >
                         ประวัติ
                     </button>
+                    {(userInfo.role === 'admin' || userInfo.role === 'superadmin') && (
+                        <a href="/admin" className="nav-tab nav-tab-history" style={{ textDecoration: 'none' }}>
+                            จัดการผู้ใช้
+                        </a>
+                    )}
                 </div>
                 <div className="nav-right">
-                    <button className="nav-pro-badge">TimSum Pro</button>
+                    <PackageBadge token={token} />
                     <div className="nav-avatar-wrapper" ref={dropdownRef}>
                         <div
                             className="nav-avatar"
@@ -463,6 +470,7 @@ function MainApp() {
                 isOpen={showSettings}
                 onClose={() => setShowSettings(false)}
                 userInfo={userInfo}
+                token={token}
             />
         </div>
     )

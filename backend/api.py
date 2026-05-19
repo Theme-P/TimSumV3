@@ -32,6 +32,8 @@ from app.tasks.transcription import process_audio
 from app.services.mongo import MongoService
 from app.routers.auth import router as auth_router
 from app.routers.quota import router as quota_router
+from app.routers.admin import router as admin_router
+from app.routers.package import router as package_router
 from app.core.auth import get_current_user
 from app.models.user import UserData
 
@@ -68,7 +70,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -81,44 +83,105 @@ app.state.storage_service = get_storage_service()
 # Include Routers
 app.include_router(auth_router)
 app.include_router(quota_router)
+app.include_router(admin_router)
+app.include_router(package_router)
 
 
-# ── Auto-create admin user on startup ──
-def _ensure_admin_user():
-    """Create admin user if it doesn't exist yet."""
+# ── Auto-create superadmin & admin users on startup ──
+def _ensure_default_users():
+    """Create superadmin and admin users if they don't exist yet."""
     from app.models.user import User, Quota
     from bson import ObjectId
 
     mongo = app.state.mongo_service
+
+    defaults = [
+        {
+            "username": os.getenv("SUPERADMIN_USERNAME", "superadmin"),
+            "email": os.getenv("SUPERADMIN_EMAIL", "superadmin@timsumv3.local"),
+            "password": os.getenv("SUPERADMIN_PASS", "TimSum@SuperAdmin2026"),
+            "role": "superadmin",
+        },
+        {
+            "username": os.getenv("ADMIN_USERNAME", "admin"),
+            "email": os.getenv("ADMIN_EMAIL", "admin@timsumv3.local"),
+            "password": os.getenv("ADMIN_PASS", "TimSum@Admin2026"),
+            "role": "admin",
+        },
+    ]
+
+    for cfg in defaults:
+        try:
+            if mongo.get_user_by_email(cfg["email"]):
+                continue
+            user = User(
+                _id=ObjectId(),
+                username=cfg["username"],
+                email=cfg["email"],
+                password=cfg["password"],
+                role=cfg["role"],
+                status="approved",
+            )
+            quota = Quota(
+                _id=ObjectId(),
+                user_id=user.id,
+                value1=100, value2=100, value3=100, value4=100,
+            )
+            mongo.create_user(user)
+            mongo.create_quota(quota)
+            print(f"✅ {cfg['role']} user auto-created: {cfg['email']}")
+        except Exception as e:
+            print(f"⚠️ Could not auto-create {cfg['role']}: {e}")
+
+_ensure_default_users()
+
+
+# ── Migrate legacy users: add status field if missing ──
+def _migrate_users_status():
+    mongo = app.state.mongo_service
+    result = mongo.db.user.update_many(
+        {"status": {"$exists": False}},
+        {"$set": {"status": "approved"}},
+    )
+    if result.modified_count > 0:
+        print(f"✅ Migrated {result.modified_count} legacy user(s): added status='approved'")
+
+_migrate_users_status()
+
+
+# ── Seed default packages & assign to default users ──
+def _seed_packages():
+    from app.models.package import DEFAULT_PACKAGES, ADMIN_PACKAGE, SUPERADMIN_PACKAGE
+
+    mongo = app.state.mongo_service
+
+    # Seed public packages
+    for pkg in DEFAULT_PACKAGES:
+        pkg_copy = {**pkg, "is_active": True}
+        mongo.upsert_package(pkg_copy)
+
+    # Seed internal admin packages
+    for pkg in [ADMIN_PACKAGE, SUPERADMIN_PACKAGE]:
+        pkg_copy = {**pkg, "is_active": True}
+        mongo.upsert_package(pkg_copy)
+
+    # Auto-assign packages to default users if they don't have one
+    sa_email = os.getenv("SUPERADMIN_EMAIL", "superadmin@timsumv3.local")
     admin_email = os.getenv("ADMIN_EMAIL", "admin@timsumv3.local")
-    admin_username = os.getenv("ADMIN_USERNAME", "admin")
-    admin_password = os.getenv("ADMIN_PASS", "TimSum@Admin2026")
 
-    try:
-        existing = mongo.get_user_by_email(admin_email)
+    for email, pkg_name in [(sa_email, "TimSumSuperAdmin"), (admin_email, "TimSumAdmin")]:
+        user = mongo.get_user_by_email(email)
+        if not user:
+            continue
+        existing = mongo.get_user_package(str(user.id))
         if existing:
-            return  # admin already exists
+            continue
+        pkg = mongo.get_package_by_name(pkg_name)
+        if pkg:
+            mongo.assign_user_package(str(user.id), pkg["_id"], assigned_by="system")
+            print(f"✅ Assigned {pkg_name} to {email}")
 
-        admin_user = User(
-            _id=ObjectId(),
-            username=admin_username,
-            email=admin_email,
-            password=admin_password,
-            role="admin",
-        )
-        admin_quota = Quota(
-            _id=ObjectId(),
-            user_id=admin_user.id,
-            value1=100, value2=100, value3=100, value4=100,
-        )
-
-        mongo.create_user(admin_user)
-        mongo.create_quota(admin_quota)
-        print(f"✅ Admin user auto-created: {admin_email}")
-    except Exception as e:
-        print(f"⚠️ Could not auto-create admin: {e}")
-
-_ensure_admin_user()
+_seed_packages()
 
 # ===================== RESPONSE MODELS =====================
 
@@ -201,6 +264,11 @@ async def transcribe_summarize(
     Returns a job_id immediately — poll /api/jobs/{job_id} for progress.
     If email_recipient is provided, results will be auto-sent when processing completes.
     """
+    # Check package limits
+    limit_check = mongo_service.check_package_limits(str(user.id))
+    if not limit_check.get("allowed"):
+        raise HTTPException(status_code=403, detail=limit_check.get("reason", "เกินโควต้าการใช้งาน"))
+
     # Validate meeting type
     if meeting_type_id < 0 or meeting_type_id > 11:
         raise HTTPException(status_code=400, detail="meeting_type_id must be between 0 and 11")
@@ -262,6 +330,9 @@ async def transcribe_summarize(
         user_id=str(user.id),
         email_recipient=email_recipient,
     )
+
+    # Increment usage counters (files + ai summaries)
+    mongo_service.increment_usage(str(user.id), files=1, ai_summaries=1)
 
     return {"success": True, "job_id": job_id, "status": "queued"}
 

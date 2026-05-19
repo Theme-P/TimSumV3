@@ -59,10 +59,20 @@ export const AuthProvider = ({ children }) => {
         localStorage.setItem('timsum_token', newToken);
     };
 
+    // Extract role from JWT payload
+    let userRole = 'user';
+    if (token) {
+        try {
+            const payload = JSON.parse(atob(token.split('.')[1]));
+            userRole = payload.role || 'user';
+        } catch { /* ignore */ }
+    }
+
     return (
         <AuthContext.Provider value={{
             token,
             isAuthenticated: !!token,
+            userRole,
             login,
             logout,
             isLoading

@@ -2,8 +2,13 @@ import React from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
-const ProtectedRoute = ({ children }) => {
-    const { isAuthenticated, isLoading } = useAuth();
+/**
+ * @param {object} props
+ * @param {React.ReactNode} props.children
+ * @param {string} [props.requiredRole] - "admin" means admin or superadmin
+ */
+const ProtectedRoute = ({ children, requiredRole }) => {
+    const { isAuthenticated, isLoading, userRole } = useAuth();
     const location = useLocation();
 
     if (isLoading) {
@@ -16,6 +21,11 @@ const ProtectedRoute = ({ children }) => {
 
     if (!isAuthenticated) {
         return <Navigate to="/login" state={{ from: location }} replace />;
+    }
+
+    // Role check: "admin" allows both admin and superadmin
+    if (requiredRole === 'admin' && userRole !== 'admin' && userRole !== 'superadmin') {
+        return <Navigate to="/" replace />;
     }
 
     return children;
