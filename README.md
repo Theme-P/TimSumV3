@@ -234,15 +234,16 @@ sudo docker compose -f docker-compose.yml up -d
 
 ## Project Roadmap
 
-| Phase | Feature | Status |
-|:-----:|---------|:------:|
-| 1 | User Registration & Admin Approval | ✅ Done |
-| 2 | Package System & Usage Tracking | ✅ Done |
-| 3 | PDPA — PII Encryption at Rest | 🔴 Todo |
-| 4 | Voice Enrollment (Speaker Library) | 🔴 Todo |
-| 5 | Custom Summary Prompt | 🔴 Todo |
-| 6 | User Profile & Settings | 🟡 In Progress |
-| 7 | Google SSO | 🟠 Low priority |
+| Phase | Feature | Status | Priority |
+|:-----:|---------|:------:|:--------:|
+| 1-7 | Auth, Package, Profile, Custom Prompt, Google SSO | ✅ Done | - |
+| 12 | Admin Dashboard Enhancement (Analytics, Package CRUD) | ✅ Done | - |
+| 3.2 | PDPA — PII Encryption at Rest | 🔴 Todo | สูง |
+| 9 | PDPA Consent & Data Rights | 🔴 Todo | สูง |
+| 15 | Security Hardening & VA Pen Test | 🔴 Todo | สูง |
+| 11 | User Activity Log (Audit Trail) | 🔴 Todo | กลาง |
+| 8 | Queue Monitoring & Scheduled DB Backup | 🔴 Todo | กลาง |
+| 4 | Voice Enrollment (Speaker Library) | 🔴 Todo | กลาง |
 
 ดูรายละเอียดแผนงานเต็มที่ [ARTIFACT_PLANNING.md](./ARTIFACT_PLANNING.md)
 
