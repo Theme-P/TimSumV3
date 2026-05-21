@@ -16,7 +16,7 @@ class MongoService:
         self.db = self.client[db_name]
 
         # Explicitly create collections if they don't exist
-        required_collections = ["user", "quota", "session", "job", "package", "user_package"]
+        required_collections = ["user", "quota", "session", "job", "package", "user_package", "password_reset"]
         existing_collections = self.db.list_collection_names()
 
         for collection in required_collections:
@@ -143,6 +143,73 @@ class MongoService:
         if result.deleted_count == 0:
             msg = "Quota not found for user"
             raise ValueError(msg)
+
+    # ── Google SSO ──
+
+    def find_or_create_google_user(self, google_id: str, email: str, name: str) -> User:
+        """
+        Find existing user by email or create a new Google SSO user.
+        - If user exists with same email → link google_id and return (must be approved).
+        - If user doesn't exist → create with status=approved, random password.
+        Returns User or raises ValueError if user exists but is not approved.
+        """
+        existing = self.db.user.find_one({"email": email})
+
+        if existing:
+            user = User(**existing)
+            status = existing.get("status", USER_STATUS_APPROVED)
+            if status != USER_STATUS_APPROVED:
+                raise ValueError(status)
+            # Link google_id if not already set
+            if not existing.get("google_id"):
+                self.db.user.update_one(
+                    {"_id": existing["_id"]},
+                    {"$set": {"google_id": google_id}},
+                )
+            return user
+
+        # Create new user with random password (Google users login via SSO only)
+        random_password = secrets.token_urlsafe(32)
+        hashed_password, salt = self._hash_password(random_password)
+
+        # Split name into first/last
+        name_parts = name.strip().split(" ", 1)
+        first_name = name_parts[0]
+        last_name = name_parts[1] if len(name_parts) > 1 else ""
+
+        user_doc = {
+            "_id": ObjectId(),
+            "username": name or email.split("@")[0],
+            "email": email,
+            "password": hashed_password,
+            "salt": salt,
+            "role": "user",
+            "status": USER_STATUS_APPROVED,
+            "first_name": first_name,
+            "last_name": last_name,
+            "google_id": google_id,
+            "registered_at": datetime.now(timezone.utc),
+            "approved_at": datetime.now(timezone.utc),
+            "approved_by": "google_sso",
+        }
+        self.db.user.insert_one(user_doc)
+
+        # Create quota for the new user
+        quota_doc = {
+            "_id": ObjectId(),
+            "user_id": user_doc["_id"],
+            "value1": 0, "value2": 0, "value3": 0, "value4": 0,
+        }
+        self.db.quota.insert_one(quota_doc)
+
+        # Assign default TimSumBasic package
+        basic_pkg = self.get_package_by_name("TimSumBasic")
+        if basic_pkg:
+            self.assign_user_package(
+                str(user_doc["_id"]), basic_pkg["_id"], assigned_by="google_sso"
+            )
+
+        return User(**user_doc)
 
     # ── User Status & Admin Management ──
 
@@ -478,3 +545,53 @@ class MongoService:
         if doc.get("completed_at"):
             doc["completed_at"] = doc["completed_at"].isoformat()
         return doc
+
+    # ── Password Reset & Profile Update ──
+
+    def create_password_reset_token(self, email: str, token: str, expires_at: datetime) -> None:
+        """Create a new password reset token."""
+        # Delete any existing tokens for this email
+        self.db.password_reset.delete_many({"email": email})
+        
+        doc = {
+            "email": email,
+            "token": token,
+            "created_at": datetime.now(timezone.utc),
+            "expires_at": expires_at,
+        }
+        self.db.password_reset.insert_one(doc)
+
+    def get_password_reset_token(self, token: str) -> Optional[dict]:
+        """Retrieve a password reset token if it hasn't expired."""
+        now = datetime.now(timezone.utc)
+        doc = self.db.password_reset.find_one({"token": token, "expires_at": {"$gt": now}})
+        return doc
+
+    def delete_password_reset_token(self, token: str) -> None:
+        """Delete a password reset token after use."""
+        self.db.password_reset.delete_one({"token": token})
+
+    def update_user_password(self, user_id: str, new_password: str) -> None:
+        """Update a user's password."""
+        hashed_password, salt = self._hash_password(new_password)
+        result = self.db.user.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"password": hashed_password, "salt": salt}},
+        )
+        if result.matched_count == 0:
+            raise ValueError("User not found")
+
+    def update_user_profile(self, user_id: str, profile_data: dict) -> None:
+        """Update a user's profile information."""
+        allowed_fields = ["first_name", "last_name", "phone", "organization"]
+        update_data = {k: v for k, v in profile_data.items() if k in allowed_fields}
+        
+        if not update_data:
+            return
+            
+        result = self.db.user.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": update_data},
+        )
+        if result.matched_count == 0:
+            raise ValueError("User not found")

@@ -78,6 +78,7 @@ services:
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_USER}
       - MINIO_SECRET_KEY=${MINIO_PASS}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
     depends_on:
       redis:
         condition: service_healthy

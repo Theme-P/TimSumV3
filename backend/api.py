@@ -34,6 +34,7 @@ from app.routers.auth import router as auth_router
 from app.routers.quota import router as quota_router
 from app.routers.admin import router as admin_router
 from app.routers.package import router as package_router
+from app.routers.user import router as user_router
 from app.core.auth import get_current_user
 from app.models.user import UserData
 
@@ -85,6 +86,7 @@ app.include_router(auth_router)
 app.include_router(quota_router)
 app.include_router(admin_router)
 app.include_router(package_router)
+app.include_router(user_router)
 
 
 # ── Auto-create superadmin & admin users on startup ──

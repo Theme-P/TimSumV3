@@ -25,3 +25,6 @@ minio>=7.2.0
 
 # Rate Limiting
 slowapi>=0.1.9
+
+# Google SSO
+google-auth>=2.29.0

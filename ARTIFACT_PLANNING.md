@@ -375,7 +375,7 @@
 
 ---
 
-### Phase 6: User Profile & Settings 🟡 (Priority: กลาง)
+### Phase 6: User Profile & Settings ✅ (Priority: กลาง)
 
 #### Artifact 6.1: User Profile Management
 
@@ -408,7 +408,7 @@
 
 ---
 
-### Phase 7: Google SSO (Bonus) 🟠 (Priority: ต่ำ)
+### Phase 7: Google SSO ✅ COMPLETED (2026-05-21)
 
 **หมายเหตุ:** ปุ่ม Google SSO มีอยู่แล้วใน Login page แต่ยังไม่ทำงาน
 
@@ -450,7 +450,7 @@ Phase 7 (Google SSO) ────────── standalone (low priority)
 | ~~6~~ | ~~Phase 5: Custom Prompt~~ | ~~เล็ก~~ | ✅ เสร็จแล้ว |
 | 7 | Phase 6: Profile & Settings | กลาง | Better UX |
 | 8 | Phase 4: Voice Enrollment | ใหญ่ | Advanced feature |
-| 9 | Phase 7: Google SSO | กลาง | Nice to have |
+| ~~9~~ | ~~Phase 7: Google SSO~~ | ~~กลาง~~ | ✅ เสร็จแล้ว |
 
 ---
 
@@ -579,7 +579,7 @@ Phase 7 (Google SSO) ────────── standalone (low priority)
 - **Atomic limit enforcement** — `check_package_limits()` runs before upload, returns 403 with Thai error messages when limits exceeded.
 - **Startup seeding** — `_seed_packages()` uses `upsert_package()` to be idempotent; safe to run on every restart.
 
-### Phase 6 — In Progress
+### Phase 6 — Completed
 
 **Scope:** User Profile & Settings
 
@@ -615,3 +615,42 @@ Phase 7 (Google SSO) ────────── standalone (low priority)
 - **Appended to system prompt** — Custom prompt is injected as a clearly labeled section at the end of the system prompt, so it influences but doesn't override the meeting-type-specific structure.
 - **Both summarization paths** — Custom prompt applies to both standard (single-call) and hierarchical (multi-chunk consolidation) paths.
 - **Server-side validation** — 500-char limit enforced both client-side and server-side (API returns 400 if exceeded).
+
+### Phase 7 — Completed 2026-05-21
+
+**Scope:** Google SSO — Sign in with Google using Google Identity Services (GIS). Auto-creates approved users on first login. Links to existing accounts by email.
+
+**Backend changes:**
+| File | Change |
+|------|--------|
+| `backend/requirements.txt` | Added `google-auth>=2.29.0` for Google ID token verification. |
+| `backend/app/models/user.py` | Added `google_id: Optional[str]` field to `User` model for storing Google subject ID. |
+| `backend/app/services/mongo.py` | Added `find_or_create_google_user()` — finds user by email or creates new approved user with random password, quota, and TimSumBasic package assignment. Links `google_id` to existing accounts. |
+| `backend/app/routers/auth.py` | Added `GET /api/auth/google/client-id` (returns client ID for frontend GIS init) and `POST /api/auth/google` (verifies Google ID token via `google.oauth2.id_token`, creates/finds user, returns JWT). |
+| `docker-compose.yml` | Added `GOOGLE_CLIENT_ID` env var to backend service. |
+
+**Frontend changes:**
+| File | Change |
+|------|--------|
+| `frontend/index.html` | Added Google Identity Services script tag (`accounts.google.com/gsi/client`). |
+| `frontend/src/pages/Login.jsx` | Fetches `GOOGLE_CLIENT_ID` from backend on mount. Initializes GIS with `google.accounts.id.initialize()` and renders official Google button via `renderButton()`. On success, sends credential to `POST /api/auth/google` and stores JWT. Falls back to disabled styled button when SSO not configured. |
+| `frontend/src/styles/Login.css` | Added `.login-google-gsi` container style and disabled state for fallback button. |
+
+**New API endpoints:**
+| Method | Endpoint | Auth | Description |
+|--------|----------|:----:|-------------|
+| GET | `/api/auth/google/client-id` | - | Returns Google Client ID for frontend (or `enabled: false` if not configured) |
+| POST | `/api/auth/google` | - | Verify Google credential, create/find user, return JWT |
+
+**New environment variables:**
+| Variable | Description |
+|----------|-------------|
+| `GOOGLE_CLIENT_ID` | Google OAuth 2.0 Client ID (from Google Cloud Console) |
+
+**Key design decisions:**
+- **Frontend-initiated flow** — Uses Google Identity Services (GIS) library with `renderButton()` for the official Google-branded sign-in button. No redirect-based OAuth needed.
+- **Backend-fetched client ID** — Login page fetches `GOOGLE_CLIENT_ID` from `GET /api/auth/google/client-id` instead of baking it into the frontend build. Allows changing the ID without rebuilding.
+- **Auto-approved** — Google SSO users are created with `status=approved` (Google-verified identity). No admin approval needed.
+- **Email linking** — If a user with the same email already exists (registered manually), the Google `sub` ID is linked to their account. They can then use either login method.
+- **Graceful degradation** — When `GOOGLE_CLIENT_ID` is not set, the Google button is disabled and the `POST /api/auth/google` endpoint returns 501. No errors or crashes.
+- **Default package** — New Google users are automatically assigned the TimSumBasic package.

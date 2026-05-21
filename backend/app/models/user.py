@@ -34,6 +34,7 @@ class User(BaseModel):
     registered_at: Optional[datetime] = None
     approved_at: Optional[datetime] = None
     approved_by: Optional[str] = None  # admin user_id who approved
+    google_id: Optional[str] = None  # Google sub (subject) ID for SSO users
 
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
@@ -61,6 +62,19 @@ class Quota(BaseModel):
     value2: float = Field(ge=0, le=100, description="Value 2 must be between 0 and 100")
     value3: float = Field(ge=0, le=100, description="Value 3 must be between 0 and 100")
     value4: float = Field(ge=0, le=100, description="Value 4 must be between 0 and 100")
+
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        populate_by_name=True,
+        json_encoders={ObjectId: str},
+    )
+
+class PasswordReset(BaseModel):
+    id: ObjectId = Field(alias="_id", default_factory=ObjectId)
+    email: str
+    token: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    expires_at: datetime
 
     model_config = ConfigDict(
         arbitrary_types_allowed=True,

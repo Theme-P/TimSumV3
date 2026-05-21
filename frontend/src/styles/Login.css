@@ -262,6 +262,17 @@
     border-color: #9ca3af;
 }
 
+.login-google-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.login-google-gsi {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+}
+
 /* ===== Register Link ===== */
 .login-register-text {
     text-align: center;

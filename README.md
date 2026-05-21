@@ -90,6 +90,8 @@ Browser
 
 ## Quick Start
 
+สำหรับรายละเอียดการตั้งค่าแบบเจาะลึก โดยเฉพาะการนำไป Deploy หรือ Fork ใช้งานเอง กรุณาอ่าน [คู่มือการ Deploy (DEPLOY.md)](./DEPLOY.md) แบบละเอียด
+
 ### Prerequisites
 - Docker + Docker Compose
 - NVIDIA GPU + nvidia-container-toolkit (สำหรับ worker)
