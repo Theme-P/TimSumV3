@@ -12,16 +12,28 @@ logger = logging.getLogger(__name__)
 
 class MongoService:
     def __init__(self, uri: str, db_name: str) -> None:
-        self.client = MongoClient(uri)
+        self.client = MongoClient(uri, tz_aware=True)
         self.db = self.client[db_name]
 
         # Explicitly create collections if they don't exist
-        required_collections = ["user", "quota", "session", "job", "package", "user_package", "password_reset"]
+        required_collections = [
+            "user", "quota", "session", "job",
+            "package", "user_package", "password_reset", "voice_sample",
+            "activity_log", "consent_record",
+        ]
         existing_collections = self.db.list_collection_names()
 
         for collection in required_collections:
             if collection not in existing_collections:
                 self.db.create_collection(collection)
+
+        # TTL indexes — auto-delete stale documents
+        self.db.activity_log.create_index("timestamp", expireAfterSeconds=90 * 24 * 3600, background=True)   # 90 days
+        self.db.session.create_index("created_at", expireAfterSeconds=90 * 24 * 3600, background=True)        # 90 days
+        self.db.password_reset.create_index("created_at", expireAfterSeconds=7 * 24 * 3600, background=True)  # 7 days
+        # Indexes for fast lookups
+        self.db.activity_log.create_index([("user_id", 1), ("timestamp", -1)], background=True)
+        self.db.consent_record.create_index([("user_id", 1), ("consent_type", 1)], background=True)
 
     def _hash_password(self, password: str, salt: Optional[str] = None) -> tuple[str, str]:
         """Hash password with salt using PBKDF2."""
@@ -439,6 +451,68 @@ class MongoService:
             "max_audio_minutes_per_file": limits.get("max_audio_minutes_per_file", 30),
         }
 
+    # ── Voice Samples ──
+
+    def create_voice_sample(self, doc: dict) -> str:
+        """Create a new voice sample. Returns sample_id."""
+        result = self.db.voice_sample.insert_one(doc)
+        return str(result.inserted_id)
+
+    def get_voice_samples_by_user(self, user_id: str) -> list:
+        """Get all voice samples for a user (without embedding vectors)."""
+        cursor = (
+            self.db.voice_sample.find(
+                {"user_id": ObjectId(user_id)},
+                {"embedding": 0},  # Exclude large embedding vectors
+            )
+            .sort("created_at", -1)
+        )
+        samples = []
+        for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            doc["user_id"] = str(doc["user_id"])
+            if doc.get("created_at"):
+                doc["created_at"] = doc["created_at"].isoformat()
+            samples.append(doc)
+        return samples
+
+    def get_voice_samples_with_embeddings(self, user_id: str) -> list:
+        """Get all voice samples for a user INCLUDING embeddings (for matching)."""
+        cursor = self.db.voice_sample.find({"user_id": ObjectId(user_id)})
+        samples = []
+        for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            doc["user_id"] = str(doc["user_id"])
+            samples.append(doc)
+        return samples
+
+    def get_voice_sample_by_id(self, sample_id: str, user_id: str) -> dict | None:
+        """Get a single voice sample by ID (ownership check)."""
+        try:
+            doc = self.db.voice_sample.find_one({
+                "_id": ObjectId(sample_id),
+                "user_id": ObjectId(user_id),
+            })
+        except Exception:
+            return None
+        if not doc:
+            return None
+        doc["_id"] = str(doc["_id"])
+        doc["user_id"] = str(doc["user_id"])
+        return doc
+
+    def delete_voice_sample(self, sample_id: str, user_id: str) -> bool:
+        """Delete a voice sample (ownership check). Returns True if deleted."""
+        result = self.db.voice_sample.delete_one({
+            "_id": ObjectId(sample_id),
+            "user_id": ObjectId(user_id),
+        })
+        return result.deleted_count > 0
+
+    def count_voice_samples(self, user_id: str) -> int:
+        """Count voice samples for a user."""
+        return self.db.voice_sample.count_documents({"user_id": ObjectId(user_id)})
+
     # ── Session / History ──
 
     def save_session(self, session_doc: dict) -> str:
@@ -580,6 +654,173 @@ class MongoService:
         )
         if result.matched_count == 0:
             raise ValueError("User not found")
+
+    # ── Activity Log ──
+
+    def log_activity(self, user_id: str, action: str, resource_type: str = None,
+                     resource_id: str = None, ip_address: str = None, metadata: dict = None) -> None:
+        """Write an activity log entry. Silently swallows errors to never break callers."""
+        try:
+            from datetime import datetime, timezone
+            doc = {
+                "user_id": user_id,
+                "action": action,
+                "resource_type": resource_type,
+                "resource_id": resource_id,
+                "ip_address": ip_address,
+                "metadata": metadata or {},
+                "timestamp": datetime.now(timezone.utc),
+            }
+            self.db.activity_log.insert_one(doc)
+        except Exception:
+            pass  # activity log must never break the main flow
+
+    def get_activity_logs(self, user_id: str = None, action: str = None,
+                          limit: int = 100, offset: int = 0) -> list:
+        """Get activity logs with optional filters. Returns newest-first."""
+        query = {}
+        if user_id:
+            query["user_id"] = user_id
+        if action:
+            query["action"] = action
+
+        cursor = (
+            self.db.activity_log.find(query)
+            .sort("timestamp", -1)
+            .skip(offset)
+            .limit(limit)
+        )
+        logs = []
+        for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            if doc.get("timestamp"):
+                doc["timestamp"] = doc["timestamp"].isoformat()
+            logs.append(doc)
+        return logs
+
+    def count_activity_logs(self, user_id: str = None, action: str = None) -> int:
+        """Count activity logs matching filters."""
+        query = {}
+        if user_id:
+            query["user_id"] = user_id
+        if action:
+            query["action"] = action
+        return self.db.activity_log.count_documents(query)
+
+    # ── Consent Records ──
+
+    def save_consent(self, user_id: str, consent_type: str, version: str,
+                     consented: bool, ip_address: str = None) -> None:
+        """Upsert a consent record for a user+type combination."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        doc = {
+            "user_id": user_id,
+            "consent_type": consent_type,
+            "version": version,
+            "consented": consented,
+            "consented_at": now,
+            "ip_address": ip_address,
+            "withdrawn_at": None if consented else now,
+        }
+        self.db.consent_record.update_one(
+            {"user_id": user_id, "consent_type": consent_type},
+            {"$set": doc},
+            upsert=True,
+        )
+
+    def get_user_consents(self, user_id: str) -> list:
+        """Get all consent records for a user."""
+        cursor = self.db.consent_record.find({"user_id": user_id})
+        records = []
+        for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            for ts_field in ("consented_at", "withdrawn_at"):
+                if doc.get(ts_field):
+                    doc[ts_field] = doc[ts_field].isoformat()
+            records.append(doc)
+        return records
+
+    def has_required_consents(self, user_id: str, required_types: list, required_versions: dict) -> bool:
+        """Check if user has all required consents at the current version."""
+        for consent_type in required_types:
+            doc = self.db.consent_record.find_one({
+                "user_id": user_id,
+                "consent_type": consent_type,
+                "consented": True,
+                "withdrawn_at": None,
+            })
+            if not doc:
+                return False
+            if required_versions.get(consent_type) and doc.get("version") != required_versions[consent_type]:
+                return False
+        return True
+
+    def get_all_consent_records(self, limit: int = 200, offset: int = 0) -> list:
+        """Get all consent records (superadmin use)."""
+        cursor = (
+            self.db.consent_record.find()
+            .sort("consented_at", -1)
+            .skip(offset)
+            .limit(limit)
+        )
+        records = []
+        for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            for ts_field in ("consented_at", "withdrawn_at"):
+                if doc.get(ts_field):
+                    doc[ts_field] = doc[ts_field].isoformat()
+            records.append(doc)
+        return records
+
+    # ── Queue Monitoring ──
+
+    def get_job_stats(self) -> dict:
+        """Aggregate job counts by status + today's completed count."""
+        pipeline = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
+        counts = {"queued": 0, "processing": 0, "completed": 0, "failed": 0, "cancelled": 0}
+        for doc in self.db.job.aggregate(pipeline):
+            if doc["_id"] in counts:
+                counts[doc["_id"]] = doc["count"]
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        counts["completed_today"] = self.db.job.count_documents({
+            "status": "completed",
+            "completed_at": {"$gte": today_start},
+        })
+        return counts
+
+    def get_all_jobs(self, status: str = None, limit: int = 50, offset: int = 0) -> list:
+        """List all jobs for admin view, newest first, excluding heavy result payloads."""
+        query = {}
+        if status:
+            query["status"] = status
+        cursor = (
+            self.db.job.find(query, {"result": 0})
+            .sort("created_at", -1)
+            .skip(offset)
+            .limit(limit)
+        )
+        jobs = []
+        for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            doc["user_id"] = str(doc["user_id"])
+            for ts_field in ("created_at", "completed_at", "email_sent_at"):
+                if doc.get(ts_field):
+                    doc[ts_field] = doc[ts_field].isoformat()
+            jobs.append(doc)
+        return jobs
+
+    def cancel_job(self, job_id: str) -> bool:
+        """Mark a queued/processing job as cancelled. Returns True if updated."""
+        result = self.db.job.update_one(
+            {"_id": ObjectId(job_id), "status": {"$in": ["queued", "processing"]}},
+            {"$set": {
+                "status": "cancelled",
+                "completed_at": datetime.now(timezone.utc),
+                "error": "Cancelled by admin",
+            }},
+        )
+        return result.modified_count > 0
 
     def update_user_profile(self, user_id: str, profile_data: dict) -> None:
         """Update a user's profile information."""

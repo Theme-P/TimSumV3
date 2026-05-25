@@ -140,6 +140,7 @@ def process_audio(
     user_id: str,
     email_recipient: str = "",
     custom_prompt: str = "",
+    voice_samples: list = None,
 ):
     """
     Process audio file: transcribe + diarize + summarize.
@@ -175,7 +176,13 @@ def process_audio(
 
         # Run the pipeline with live progress reporting
         pipeline = TranscribeSummaryPipeline()
-        result = pipeline.process(local_audio, meeting_type_id=meeting_type_id, on_progress=on_progress, custom_prompt=custom_prompt)
+        result = pipeline.process(
+            local_audio,
+            meeting_type_id=meeting_type_id,
+            on_progress=on_progress,
+            custom_prompt=custom_prompt,
+            voice_samples=voice_samples,
+        )
 
         # Pipeline completed — upload clips to MinIO
         _update_job(db, job_id, {"current_step": "saving", "progress": 95})
@@ -222,6 +229,9 @@ def process_audio(
             "processing_time": result["processing_time"],
             "segment_count": len(result["full_transcript"]["segments"]),
             "speaker_count": len(result["full_transcript"]["speaker_summary"]["speaking_time"]),
+            "speaker_clips": speaker_clips_response,
+            "clip_prefix": clip_prefix,
+            "suggested_names": result.get("suggested_names", {}),
             "created_at": datetime.now(timezone.utc),
         }
         session_result = db.session.insert_one(session_doc)

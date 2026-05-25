@@ -16,8 +16,9 @@ from minio.error import S3Error
 
 BUCKET_AUDIO = "audio-uploads"
 BUCKET_CLIPS = "speaker-clips"
+BUCKET_VOICE_SAMPLES = "voice-samples"
 
-_ALL_BUCKETS = [BUCKET_AUDIO, BUCKET_CLIPS]
+_ALL_BUCKETS = [BUCKET_AUDIO, BUCKET_CLIPS, BUCKET_VOICE_SAMPLES]
 
 
 class StorageService:

@@ -1,4 +1,4 @@
-# TimSum V3 — Artifact Planning
+﻿# TimSum V3 — Artifact Planning
 
 > วันที่วิเคราะห์: 2026-05-19
 > สถานะโปรเจกต์: MVP Development Phase
@@ -55,14 +55,239 @@
 | 5 | User profile ตั้งค่าตาม package | ✅ เสร็จแล้ว (package + usage bars) | กลาง |
 | 6 | Async process file เสียง | ✅ เสร็จแล้ว | - |
 | 7 | การแยกเสียง + สรุปประชุม | ✅ เสร็จแล้ว | - |
-| 8a | แนบ clip ตัวอย่างเสียง (voice enrollment) | 🔴 ไม่มี | กลาง |
-| 8b | ใช้ clip เสียงที่เคยให้ไว้แล้ว (voice library) | 🔴 ไม่มี | กลาง |
+| 8a | แนบ clip ตัวอย่างเสียง (voice enrollment) | ✅ เสร็จแล้ว | กลาง |
+| 8b | ใช้ clip เสียงที่เคยให้ไว้แล้ว (voice library) | ✅ เสร็จแล้ว | กลาง |
 | 9a | Auto mode summary [default] | ✅ เสร็จแล้ว | - |
 | 9b | ผู้ใช้ prompt เพิ่มเพื่อกำหนดรูปแบบสรุป | ✅ เสร็จแล้ว | กลาง |
 | 10 | PDPA — 3 ระดับ user (superadmin/admin/user) | ✅ เสร็จแล้ว | สูง |
 | 11 | Encrypt/tokenize ข้อมูลส่วนบุคคลใน DB | 🔴 ไม่มี | สูง |
+| 12 | PDPA Consent UI & Management | ✅ เสร็จแล้ว | สูง |
+| 13 | User Activity Log & Audit Trail | ✅ เสร็จแล้ว | สูง |
+| 14 | Transcript/Summary รองรับ 3 ภาษา (ไทย/อังกฤษ/จีน) | 🔴 ไม่มี | กลาง |
+| 15 | Queue Monitoring (Admin) | ✅ เสร็จแล้ว | กลาง |
+| 16 | Server Resource Monitoring + Ollama Management | 🟡 กำลังดำเนินการ (Phase 10) | กลาง |
+| 17 | Scheduled Daily DB Backup | 🔴 ไม่มี | กลาง |
+| 18 | Human Speaker Verification (ยืนยันเสียงโดย Human) | 🔴 ไม่มี | กลาง |
+| 19 | Sub-agenda Auto-separation & Analysis | 🔴 ไม่มี | ต่ำ |
+| 20 | LLM Settings & Rule-based Templates | 🔴 ไม่มี | ต่ำ |
+| 21 | VA Pen Test / Security Hardening | 🔴 ไม่มี | สูง |
+| 22 | Performance Tuning | 🔴 ไม่มี | กลาง |
 
-**สรุป:** 11 features เสร็จแล้ว, 0 features มีบางส่วน, 2 features ต้องทำใหม่
+**สรุป:** 16 features เสร็จแล้ว, 1 features กำลังดำเนินการ, 6 features ต้องทำใหม่
+
+---
+
+## Implementation Log
+
+### Phase 1 — Completed 2026-05-19
+
+**Scope:** Public Registration + Admin Approval + 3-Level Role Foundation
+
+**Backend changes:**
+| File | Change |
+|------|--------|
+| `backend/app/models/user.py` | Added: `first_name`, `last_name`, `phone`, `organization`, `status`, `registered_at`, `approved_at`, `approved_by` fields. Added role/status constants. |
+| `backend/app/services/mongo.py` | Added: `get_user_status()`, `register_public_user()`, `get_users_by_status()`, `update_user_status()`, `get_user_count_by_status()`. Login now blocks non-approved users. |
+| `backend/app/routers/auth.py` | Added: `POST /api/auth/register-public` (public registration with validation). Login returns Thai error messages for pending/rejected/suspended. |
+| `backend/app/routers/admin.py` | **New file.** Admin endpoints: `GET /api/admin/users`, `GET /api/admin/users/stats`, `PUT /api/admin/users/{id}/approve\|reject\|suspend\|status`. |
+| `backend/app/core/auth.py` | `get_current_admin()` now allows both `admin` and `superadmin` roles. |
+| `backend/api.py` | Registered `admin_router`. Added `PUT` to CORS allowed methods. |
+
+**Frontend changes:**
+| File | Change |
+|------|--------|
+| `frontend/src/pages/Register.jsx` | **New file.** Public registration form with: first name, last name, email, phone, organization, password + confirm. Shows success state with "รอการอนุมัติ" message. |
+| `frontend/src/pages/AdminDashboard.jsx` | **New file.** Admin dashboard with: stat cards (pending/approved/rejected/suspended), tab filter, user list with approve/reject/suspend actions. |
+| `frontend/src/App.jsx` | Added `/register` and `/admin` routes. |
+| `frontend/src/components/ProtectedRoute.jsx` | Added `requiredRole` prop — supports role-based route protection. |
+| `frontend/src/contexts/AuthContext.jsx` | Exposes `userRole` from JWT payload. |
+| `frontend/src/pages/Login.jsx` | "สมัครสมาชิก" link now routes to `/register`. |
+| `frontend/src/pages/MainApp.jsx` | Navbar shows "จัดการผู้ใช้" link for admin/superadmin roles. |
+
+**New API endpoints:**
+| Method | Endpoint | Auth | Description |
+|--------|----------|:----:|-------------|
+| POST | `/api/auth/register-public` | - | Public user registration (status=pending) |
+| GET | `/api/admin/users` | Admin | List users with optional status filter |
+| GET | `/api/admin/users/stats` | Admin | User count by status |
+| PUT | `/api/admin/users/{id}/approve` | Admin | Approve pending user |
+| PUT | `/api/admin/users/{id}/reject` | Admin | Reject user |
+| PUT | `/api/admin/users/{id}/suspend` | Admin | Suspend user |
+| PUT | `/api/admin/users/{id}/status` | Admin | Set any valid status |
+
+### Phase 2 — Completed 2026-05-19
+
+**Scope:** Package System — 4 public packages + 2 internal (Admin/SuperAdmin), usage tracking with monthly auto-reset, package limit enforcement, dynamic nav badge, and admin package assignment UI.
+
+**Packages implemented (from pricing table):**
+| Package | Price | Tier | Transcription | Max/File | Files/Mo | AI Sum/Mo |
+|---------|-------|:----:|:-------------:|:--------:|:--------:|:---------:|
+| TimSumBasic | 200 ฿/mo | 0 | 180 min | 30 min | 6 | 6 |
+| TimSumPro | 400 ฿/mo | 1 | 900 min | 90 min | 20 | 20 |
+| TimSumEnterprise | 1,000 ฿/mo | 2 | 3,200 min | 300 min | 250 | 250 |
+| TimSumEnterprise (yearly) | 6,000 ฿/yr | 2 | 3,200 min | 300 min | 250 | 250 |
+| TimSumAdmin (internal) | — | 10 | 99,999 min | 99,999 min | 99,999 | 99,999 |
+| TimSumSuperAdmin (internal) | — | 99 | 99,999 min | 99,999 min | 99,999 | 99,999 |
+
+**Backend changes:**
+| File | Change |
+|------|--------|
+| `backend/app/models/package.py` | **New file.** `Package`, `PackageLimits`, `UserPackage`, `UserPackageUsage` models. `DEFAULT_PACKAGES` list, `ADMIN_PACKAGE`, `SUPERADMIN_PACKAGE` constants. |
+| `backend/app/services/mongo.py` | Added collections: `package`, `user_package`. Methods: `upsert_package()`, `get_all_packages()`, `get_package_by_id()`, `get_package_by_name()`, `assign_user_package()`, `get_user_package()` (with auto monthly usage reset), `increment_usage()`, `check_package_limits()`. |
+| `backend/app/routers/package.py` | **New file.** Package endpoints (see table below). |
+| `backend/api.py` | Registered `package_router`. Added `_seed_packages()` startup — seeds all default packages + assigns Admin/SuperAdmin packages to default users. Added package limit check (`check_package_limits()`) before transcribe-summarize. Added `increment_usage(files=1, ai_summaries=1)` after job creation. |
+
+**Frontend changes:**
+| File | Change |
+|------|--------|
+| `frontend/src/components/PackageBadge.jsx` | **New file.** Fetches user's package from API, displays dynamic badge with tier-based colors. |
+| `frontend/src/components/SettingsModal.jsx` | Added `UsageBar` component. New "แพ็กเกจ & การใช้งาน" section with progress bars (turns red at >= 80%). |
+| `frontend/src/pages/MainApp.jsx` | Replaced hardcoded badge with `<PackageBadge token={token} />`. |
+| `frontend/src/pages/AdminDashboard.jsx` | Added package assignment dropdown per approved user. |
+
+**New API endpoints:**
+| Method | Endpoint | Auth | Description |
+|--------|----------|:----:|-------------|
+| GET | `/api/user/package` | User | Get own package + usage (auto-resets monthly) |
+| GET | `/api/packages` | User | List public packages (tier < 10) |
+| GET | `/api/admin/packages` | Admin | List all packages including internal |
+| PUT | `/api/admin/users/{id}/package` | Admin | Assign package to user |
+| GET | `/api/admin/users/{id}/package` | Admin | View user's package details |
+
+### Phase 5 — Completed 2026-05-19
+
+**Scope:** Custom Summary Prompt — collapsible textarea for user-defined instructions appended to GPT-4.1 summary prompt. Gated by package permission (`custom_prompt_enabled`).
+
+**Backend changes:**
+| File | Change |
+|------|--------|
+| `backend/app/models/package.py` | Added `custom_prompt_enabled: bool = False` to `PackageLimits`. Enabled for Pro+. |
+| `backend/api.py` | Added `custom_prompt` Form parameter to `POST /api/transcribe-summarize`. Max 500 chars. |
+| `backend/app/tasks/transcription.py` | Added `custom_prompt` parameter, forwarded to `pipeline.process()`. |
+| `backend/app/services/summarizer.py` | Appends custom_prompt as "**คำสั่งเพิ่มเติมจากผู้ใช้:**" section to system prompt. |
+
+**Frontend changes:**
+| File | Change |
+|------|--------|
+| `frontend/src/components/CustomPromptInput.jsx` | **New file.** Collapsible textarea with 500-char limit, character counter. |
+| `frontend/src/pages/MainApp.jsx` | Fetches package limits to check `custom_prompt_enabled`. Sends `custom_prompt` in FormData. |
+
+### Phase 6 — Completed
+
+**Scope:** User Profile & Settings
+
+**Frontend changes:**
+| File | Change |
+|------|--------|
+| `frontend/src/components/ProfileModal.jsx` | **New file.** Extracted from `SettingsModal`. Contains profile + package/usage sections. |
+| `frontend/src/components/SettingsModal.jsx` | Removed account/package sections. Now only theme and about. |
+| `frontend/src/pages/MainApp.jsx` | Added `showProfile` state and wired "โปรไฟล์" button. |
+
+### Phase 7 — Completed 2026-05-21
+
+**Scope:** Google SSO — Sign in with Google using GIS. Auto-creates approved users. Links to existing accounts by email.
+
+**Backend changes:**
+| File | Change |
+|------|--------|
+| `backend/requirements.txt` | Added `google-auth>=2.29.0`. |
+| `backend/app/models/user.py` | Added `google_id: Optional[str]` field. |
+| `backend/app/services/mongo.py` | Added `find_or_create_google_user()`. |
+| `backend/app/routers/auth.py` | Added `GET /api/auth/google/client-id` and `POST /api/auth/google`. |
+
+**Frontend changes:**
+| File | Change |
+|------|--------|
+| `frontend/index.html` | Added Google Identity Services script tag. |
+| `frontend/src/pages/Login.jsx` | Fetches client ID, renders GIS button, sends credential to backend. |
+
+**New API endpoints:**
+| Method | Endpoint | Auth | Description |
+|--------|----------|:----:|-------------|
+| GET | `/api/auth/google/client-id` | - | Returns Google Client ID |
+| POST | `/api/auth/google` | - | Verify Google credential, create/find user, return JWT |
+
+### Phase 8 — Completed 2026-05-24
+
+**Scope:** User Activity Log — MongoDB collection with 90-day TTL, fire-and-forget logging helper, user and admin log endpoints.
+
+**Backend changes:**
+| File | Change |
+|------|--------|
+| `backend/app/models/activity_log.py` | **New file.** `ActivityLog` model + action constants. |
+| `backend/app/services/mongo.py` | Added `activity_log` collection. TTL 90d. `log_activity()`, `get_activity_logs()`, `count_activity_logs()`. |
+| `backend/app/routers/activity.py` | **New file.** `GET /api/user/activity-logs`, `GET /api/admin/activity-logs`. |
+| `backend/api.py` | Registered `activity_router`. Added `log_activity()` to upload/view endpoints. |
+
+**Frontend changes:**
+| File | Change |
+|------|--------|
+| `frontend/src/components/ProfileModal.jsx` | Added "ประวัติการใช้งาน" tab — 10 latest entries with Thai labels + relative timestamps. |
+| `frontend/src/pages/AdminDashboard.jsx` | Added "Activity Log" tab. |
+
+### Phase 9 — Completed 2026-05-24
+
+**Scope:** PDPA Consent Management — consent model with versioning, ConsentGate wrapping the entire app, Privacy Policy and Terms pages.
+
+**Backend changes:**
+| File | Change |
+|------|--------|
+| `backend/app/models/consent.py` | **New file.** `ConsentRecord` model. `CONSENT_TYPES` with versioning. |
+| `backend/app/services/mongo.py` | Added `consent_record` collection. `save_consent()`, `get_user_consents()`, `has_required_consents()` (version-aware). |
+| `backend/app/routers/consent.py` | **New file.** `GET /POST /DELETE /api/consent`, `GET /api/admin/consent-records`. |
+
+**Frontend changes:**
+| File | Change |
+|------|--------|
+| `frontend/src/components/ConsentModal.jsx` | **New file.** Full-screen consent overlay (required on first login). |
+| `frontend/src/pages/PrivacyPolicy.jsx` | **New file.** 6-section PDPA-aligned policy page. |
+| `frontend/src/pages/TermsOfService.jsx` | **New file.** 6-section terms page. |
+| `frontend/src/contexts/AuthContext.jsx` | Added `needsConsent`, `consentChecked`, `markConsented`. |
+| `frontend/src/App.jsx` | Added `ConsentGate` wrapper + `/privacy-policy` + `/terms` routes. |
+| `frontend/src/components/ProfileModal.jsx` | Added "การยินยอม (PDPA)" tab. |
+
+### Phase 4 — Completed 2026-05-22
+
+**Scope:** Voice Enrollment System — Upload voice samples, extract speaker embeddings via PyAnnote, voice-matched diarization.
+
+**Backend changes:**
+| File | Change |
+|------|--------|
+| `backend/app/models/voice_sample.py` | **New file.** `VoiceSample` model. |
+| `backend/app/services/voice_matching.py` | **New file.** `VoiceMatchingService` — PyAnnote embedding + cosine similarity. |
+| `backend/app/routers/voice_samples.py` | **New file.** Upload / list / stream / delete endpoints. |
+| `backend/app/services/pipeline.py` | Integrated `VoiceMatchingService` after diarization step. |
+| `backend/api.py` | Registered `voice_samples_router`. Added `use_voice_matching` toggle. |
+
+**Frontend changes:**
+| File | Change |
+|------|--------|
+| `frontend/src/components/VoiceLibrary.jsx` | **New file.** Upload dropzone, sample list, playback, delete. |
+| `frontend/src/components/ProfileModal.jsx` | Added "🎙️ คลังเสียง" tab (package-gated). |
+| `frontend/src/pages/MainApp.jsx` | Added `use_voice_matching` toggle. |
+
+### Phase 10 (Queue Monitoring) — Completed 2026-05-25
+
+**Scope:** Queue Monitor tab ใน AdminDashboard — แสดง Celery job stats จาก MongoDB + job list + cancel job
+
+**Backend changes:**
+| File | Change |
+|------|--------|
+| `backend/app/routers/queue.py` | **New file.** `GET /api/admin/queue/stats`, `GET /api/admin/queue/tasks`, `DELETE /api/admin/queue/tasks/{job_id}` |
+| `backend/app/services/mongo.py` | Added: `get_job_stats()`, `get_all_jobs()`, `cancel_job()` |
+| `backend/api.py` | Registered `queue_router` |
+
+**Frontend changes:**
+| File | Change |
+|------|--------|
+| `frontend/src/pages/AdminDashboard.jsx` | Added "Queue Monitor" tab — 5 stat cards + job list + cancel button. Auto-refresh ทุก 30 วินาที. |
+
+**New API endpoints:**
+| Method | Endpoint | Auth | Description |
+|--------|----------|:----:|-------------|
+| GET | `/api/admin/queue/stats` | Admin | Job counts by status + completed_today |
+| GET | `/api/admin/queue/tasks` | Admin | Recent 50 jobs (all users), filterable by status |
+| DELETE | `/api/admin/queue/tasks/{job_id}` | Admin | Revoke Celery task + mark job as cancelled |
 
 ---
 
@@ -79,11 +304,7 @@
 **Backend:**
 - `POST /api/auth/register-public` — endpoint ใหม่สำหรับ public registration
 - เพิ่ม field ใน User model:
-  ```
-  first_name, last_name, phone, organization, 
-  status: "pending" | "approved" | "rejected" | "suspended",
-  registered_at, approved_at, approved_by
-  ```
+  *[รายละเอียดโค้ดถูกตัดออกเพื่อความกระชับ]*
 - สร้าง user ด้วย status = "pending" (ยังล็อกอินไม่ได้)
 - Validation: email unique, password strength, required fields
 - ส่ง email ยืนยันการลงทะเบียน (optional)
@@ -140,24 +361,7 @@
 
 **Backend:**
 - สร้าง Package model:
-  ```
-  package_id, name, description, 
-  limits: {
-    max_upload_mb: int,
-    max_audio_minutes: int,
-    max_files_per_month: int,
-    max_speakers: int,
-    allowed_meeting_types: [int],
-    summary_custom_prompt: bool,
-    voice_enrollment: bool,
-    email_export: bool,
-    priority_processing: bool
-  },
-  price: float,
-  billing_cycle: "monthly" | "yearly" | "one-time",
-  is_active: bool,
-  created_at, updated_at
-  ```
+  *[รายละเอียดโค้ดถูกตัดออกเพื่อความกระชับ]*
 - MongoDB collection: `package`
 - Admin CRUD APIs:
   - `POST /api/admin/packages` — สร้าง package
@@ -169,18 +373,7 @@
 
 **Backend:**
 - สร้าง UserPackage model:
-  ```
-  user_id, package_id, 
-  status: "active" | "expired" | "exceeded",
-  started_at, expires_at,
-  usage: {
-    files_this_month: int,
-    minutes_this_month: float,
-    total_files: int,
-    total_minutes: float
-  },
-  assigned_by (admin user_id)
-  ```
+  *[รายละเอียดโค้ดถูกตัดออกเพื่อความกระชับ]*
 - MongoDB collection: `user_package`
 - APIs:
   - `POST /api/admin/users/{user_id}/assign-package` — admin กำหนด package
@@ -229,11 +422,7 @@
   - `get_current_superadmin()` — superadmin only
   - `get_current_admin_or_above()` — admin + superadmin
 - Data visibility rules:
-  ```
-  superadmin → เห็นข้อมูลส่วนบุคคลของทุกคน (full PII)
-  admin      → เห็นข้อมูลทุกคน แต่ mask PII (เจษฎา → เจ***)
-  user       → เห็นเฉพาะข้อมูลของตัวเอง
-  ```
+  *[รายละเอียดโค้ดถูกตัดออกเพื่อความกระชับ]*
 - สร้าง PII masking utility:
   - `mask_name("เจษฎา")` → `"เจ***"`
   - `mask_email("user@email.com")` → `"us***@email.com"`
@@ -260,13 +449,7 @@
 
 **Backend:**
 - สร้าง encryption service:
-  ```python
-  # ใช้ AES-256-GCM สำหรับ field-level encryption
-  class PIIEncryptor:
-      encrypt(plaintext) → ciphertext + nonce
-      decrypt(ciphertext, nonce) → plaintext
-      tokenize(value) → deterministic_token  # สำหรับ search
-  ```
+  *[รายละเอียดโค้ดถูกตัดออกเพื่อความกระชับ]*
 - Fields ที่ต้อง encrypt:
   - `user.first_name`, `user.last_name`
   - `user.phone`
@@ -289,7 +472,7 @@
 
 ---
 
-### Phase 4: Voice Enrollment System 🔴 (Priority: กลาง)
+### Phase 4: Voice Enrollment System ✅ COMPLETED (2026-05-22)
 
 **เหตุผล:** เพิ่มความแม่นยำของ speaker diarization — differentiate จากคู่แข่ง
 
@@ -297,14 +480,7 @@
 
 **Backend:**
 - สร้าง VoiceSample model:
-  ```
-  sample_id, user_id (owner), 
-  speaker_name, speaker_position,
-  audio_path (MinIO), 
-  embedding: [float] (speaker embedding vector),
-  duration_seconds,
-  created_at
-  ```
+  *[รายละเอียดโค้ดถูกตัดออกเพื่อความกระชับ]*
 - MongoDB collection: `voice_sample`
 - MinIO bucket: `voice-samples`
 - APIs:
@@ -428,15 +604,7 @@
 
 ## Implementation Priority & Dependency Map
 
-```
-Phase 1 (Registration & Approval) ──────┐
-                                         ├─→ Phase 2 (Package System)
-Phase 3 (PDPA & Encryption) ─────────────┘         │
-                                                     ├─→ Phase 6 (Profile & Settings)
-Phase 4 (Voice Enrollment) ──── standalone           │
-Phase 5 (Custom Prompt) ─────── standalone           │
-Phase 7 (Google SSO) ────────── standalone (low priority)
-```
+*[รายละเอียดโค้ดถูกตัดออกเพื่อความกระชับ]*
 
 ### แนะนำลำดับการทำ
 
@@ -449,8 +617,357 @@ Phase 7 (Google SSO) ────────── standalone (low priority)
 | ~~5~~ | ~~Phase 2.1-2.3: Package System~~ | ~~ใหญ่~~ | ✅ เสร็จแล้ว |
 | ~~6~~ | ~~Phase 5: Custom Prompt~~ | ~~เล็ก~~ | ✅ เสร็จแล้ว |
 | 7 | Phase 6: Profile & Settings | กลาง | Better UX |
-| 8 | Phase 4: Voice Enrollment | ใหญ่ | Advanced feature |
+| ~~8~~ | ~~Phase 4: Voice Enrollment~~ | ~~ใหญ่~~ | ✅ เสร็จแล้ว |
 | ~~9~~ | ~~Phase 7: Google SSO~~ | ~~กลาง~~ | ✅ เสร็จแล้ว |
+| ~~10~~ | ~~Phase 8: User Activity Log~~ | ~~เล็ก-กลาง~~ | ✅ เสร็จแล้ว |
+| ~~11~~ | ~~Phase 9: PDPA Consent Management~~ | ~~กลาง~~ | ✅ เสร็จแล้ว |
+| 12 | Phase 10: Queue & Server Monitoring | กลาง | Ops visibility |
+| 13 | Phase 11: Scheduled DB Backup | เล็ก | Data safety |
+| 14 | Phase 14: Human Speaker Verification | กลาง | Accuracy improvement |
+| 15 | Phase 12: Multilingual Support | ใหญ่ | Market expansion |
+| 16 | Phase 13: Sub-agenda Auto-separation | ใหญ่ | Premium feature |
+| 17 | Phase 15: LLM Settings & Templates | กลาง | Customization |
+| 18 | Phase 16: Security & Performance | ใหญ่ | Production readiness |
+
+---
+
+### Phase 8: User Activity Log & Audit Trail ✅ COMPLETED (2026-05-24)
+
+**เหตุผล:** ต้องการสำหรับ PDPA compliance — ต้องรู้ว่าใครเข้าถึงข้อมูลอะไรเมื่อไร + ตรวจสอบ anomaly
+
+#### Artifact 8.1: Activity Logging Backend
+
+**Backend:**
+- สร้าง `ActivityLog` model:
+  *[รายละเอียดโค้ดถูกตัดออกเพื่อความกระชับ]*
+- Actions ที่ต้อง log:
+  - `login`, `logout`, `login_failed`
+  - `upload_audio`, `view_transcript`, `view_summary`, `download_docx`, `send_email`
+  - `view_session`, `delete_session`
+  - `update_profile`, `change_password`
+  - `admin_approve_user`, `admin_reject_user`, `admin_assign_package`
+- MongoDB collection: `activity_log` (TTL index: เก็บ 90 วัน)
+- APIs:
+  - `GET /api/admin/activity-logs` — superadmin ดู log ทั้งหมด (filter by user, date, action)
+  - `GET /api/user/activity-logs` — user ดู log ของตัวเอง
+  - Export ออกเป็น CSV
+
+**Frontend:**
+- Admin Dashboard: tab "Activity Log" — searchable/filterable table
+- User Profile: section "ประวัติการใช้งาน" — แสดง log ย้อนหลัง 30 วัน
+
+**Files ที่ต้องแก้/สร้าง:**
+| Action | File |
+|--------|------|
+| สร้างใหม่ | `backend/app/models/activity_log.py` |
+| สร้างใหม่ | `backend/app/services/activity_logger.py` — log() helper function |
+| สร้างใหม่ | `backend/app/routers/activity.py` — activity log endpoints |
+| แก้ไข | `backend/app/services/mongo.py` — activity_log collection + TTL index |
+| แก้ไข | `backend/api.py` — register activity router, add request logging middleware |
+| แก้ไข | `frontend/src/pages/AdminDashboard.jsx` — เพิ่ม Activity Log tab |
+| แก้ไข | `frontend/src/components/ProfileModal.jsx` — เพิ่ม activity history section |
+
+---
+
+### Phase 9: PDPA Consent Management ✅ COMPLETED (2026-05-24)
+
+**เหตุผล:** กฎหมาย PDPA กำหนดให้ต้องเก็บ consent อย่างชัดเจน พร้อม audit trail ของ consent
+
+#### Artifact 9.1: Consent Collection & Management
+
+**Backend:**
+- สร้าง `ConsentRecord` model:
+  *[รายละเอียดโค้ดถูกตัดออกเพื่อความกระชับ]*
+- Consent types:
+  - `privacy_policy` — นโยบายความเป็นส่วนตัว
+  - `data_processing` — การประมวลผลข้อมูลเสียง/transcript
+  - `marketing` — การรับข้อมูลข่าวสาร (optional)
+- APIs:
+  - `GET /api/consent` — ดู consent status ของ user ปัจจุบัน
+  - `POST /api/consent` — บันทึก consent (ระบุ type + version)
+  - `DELETE /api/consent/{type}` — ถอน consent
+  - `GET /api/admin/consent-records` — superadmin ดู consent records ทั้งหมด
+- Policy versioning: เมื่อ privacy policy อัปเดต → ต้อง re-consent
+
+**Frontend:**
+- Modal "ยินยอมการใช้งาน" แสดงในครั้งแรกที่ login (ถ้ายังไม่ consent)
+- หน้า Privacy Policy (`/privacy-policy`) และ Terms of Service (`/terms`)
+- User Profile: section "การยินยอม" — ดู/ถอน consent แต่ละประเภท
+- Admin: รายงาน consent statistics
+
+**Files ที่ต้องแก้/สร้าง:**
+| Action | File |
+|--------|------|
+| สร้างใหม่ | `backend/app/models/consent.py` |
+| สร้างใหม่ | `backend/app/routers/consent.py` |
+| แก้ไข | `backend/app/services/mongo.py` — consent collection |
+| แก้ไข | `backend/api.py` — register consent router |
+| สร้างใหม่ | `frontend/src/components/ConsentModal.jsx` |
+| สร้างใหม่ | `frontend/src/pages/PrivacyPolicy.jsx` |
+| สร้างใหม่ | `frontend/src/pages/TermsOfService.jsx` |
+| แก้ไข | `frontend/src/App.jsx` — เพิ่ม routes + consent gate |
+| แก้ไข | `frontend/src/contexts/AuthContext.jsx` — check consent on login |
+
+---
+
+### Phase 10: Queue Monitoring & Server Administration 🔴 (Priority: กลาง)
+
+**เหตุผล:** Admin ต้องการ visibility ของ Celery queue และ server resources เพื่อ manage workload
+
+#### Artifact 10.1: Queue Monitoring Dashboard
+
+**Backend:**
+- APIs:
+  - `GET /api/admin/queue/stats` — Celery queue depth, active/reserved/scheduled tasks
+  - `GET /api/admin/queue/tasks` — list tasks (pending/active/completed/failed) with details
+  - `DELETE /api/admin/queue/tasks/{task_id}` — revoke/cancel task (superadmin)
+  - `GET /api/admin/system/resources` — CPU%, RAM%, GPU%, Disk usage (Docker stats)
+  - `POST /api/admin/system/ollama/restart` — restart Ollama container (superadmin)
+- ใช้ Celery Inspect API สำหรับ queue data
+- ใช้ `psutil` หรือ Docker API สำหรับ resource metrics
+
+**Frontend:**
+- Admin Dashboard: tab "ระบบ & Queue"
+  - Real-time queue stats (jobs waiting, processing, completed today)
+  - Server resource gauges (CPU, RAM, GPU, Disk)
+  - Task list with status + user + filename
+  - Buttons: Cancel task, Restart Ollama (superadmin only)
+- Auto-refresh ทุก 30 วินาที
+
+**Files ที่ต้องแก้/สร้าง:**
+| Action | File |
+|--------|------|
+| สร้างใหม่ | `backend/app/routers/system_admin.py` — queue + system endpoints |
+| แก้ไข | `backend/api.py` — register system_admin router |
+| แก้ไข | `frontend/src/pages/AdminDashboard.jsx` — เพิ่ม System tab |
+| สร้างใหม่ | `frontend/src/components/admin/QueueMonitor.jsx` |
+| สร้างใหม่ | `frontend/src/components/admin/ServerResources.jsx` |
+
+---
+
+### Phase 11: Scheduled Database Backup 🔴 (Priority: กลาง)
+
+**เหตุผล:** ป้องกันข้อมูลสูญหาย — backup อัตโนมัติทุกวัน + เก็บไว้ 30 วัน
+
+#### Artifact 11.1: Automated MongoDB Backup
+
+**Backend:**
+- Celery Beat task: `backup_mongodb()` — รันทุกวันตี 2
+  - `mongodump` → compress → เก็บใน MinIO bucket `db-backups`
+  - ลบ backups ที่เก่ากว่า 30 วัน (cleanup)
+  - ส่ง email แจ้ง superadmin เมื่อ backup สำเร็จ/ล้มเหลว
+- APIs:
+  - `GET /api/admin/backups` — list backup files + size + date
+  - `POST /api/admin/backups/trigger` — manual trigger backup (superadmin)
+  - `GET /api/admin/backups/{id}/download` — download backup file
+
+**Infrastructure:**
+- MinIO bucket: `db-backups`
+- Celery Beat scheduler เพิ่ม schedule ใน `celery_config.py`
+- `mongodump` ต้องมีใน GPU worker container
+
+**Files ที่ต้องแก้/สร้าง:**
+| Action | File |
+|--------|------|
+| สร้างใหม่ | `backend/app/tasks/backup.py` — backup Celery task |
+| แก้ไข | `backend/app/services/storage.py` — เพิ่ม db-backups bucket |
+| แก้ไข | `backend/celery_config.py` — เพิ่ม beat schedule |
+| สร้างใหม่ | `backend/app/routers/backup.py` — backup management endpoints |
+| แก้ไข | `backend/api.py` — register backup router |
+| แก้ไข | `docker-compose.yml` — เพิ่ม mongodump ใน worker |
+| แก้ไข | `frontend/src/components/admin/ServerResources.jsx` — แสดง backup status |
+
+---
+
+### Phase 12: Multilingual Support (ไทย / อังกฤษ / จีน) 🔴 (Priority: กลาง)
+
+**เหตุผล:** รองรับการประชุมแบบ code-switching หรือการประชุมที่มีผู้เข้าร่วมหลายชาติ
+
+#### Artifact 12.1: Multi-language Transcription & Summary
+
+**Backend:**
+- WhisperX รองรับ multilingual อยู่แล้ว — ปัจจุบัน force `language="th"`
+- เพิ่ม `language` parameter ใน transcribe-summarize request:
+  *[รายละเอียดโค้ดถูกตัดออกเพื่อความกระชับ]*
+- Summary prompt: ปรับ system prompt ตาม language mode
+  - `th` → สรุปเป็นภาษาไทย
+  - `en` → Summarize in English
+  - `zh` → 用中文总结
+  - `mixed` → สรุปเป็นภาษาไทย แต่ระบุ original language ของแต่ละ speaker
+- เพิ่ม `detected_language` field ใน session result
+
+**Frontend:**
+- เพิ่ม "ภาษาการประชุม" dropdown ใน upload form (ใต้ meeting type):
+  - 🇹🇭 ภาษาไทย (default)
+  - 🇬🇧 ภาษาอังกฤษ
+  - 🇨🇳 ภาษาจีน
+  - 🌐 ตรวจสอบอัตโนมัติ
+- แสดง detected language badge ใน session history
+
+**Files ที่ต้องแก้/สร้าง:**
+| Action | File |
+|--------|------|
+| แก้ไข | `backend/api.py` — เพิ่ม `language` Form parameter |
+| แก้ไข | `backend/app/tasks/transcription.py` — pass language |
+| แก้ไข | `backend/app/services/pipeline.py` — ส่ง language ไป WhisperX |
+| แก้ไข | `backend/app/services/summarizer.py` — ปรับ system prompt ตาม language |
+| แก้ไข | `frontend/src/pages/MainApp.jsx` — เพิ่ม language selector |
+| แก้ไข | `frontend/src/styles/index.css` — style สำหรับ language selector |
+
+---
+
+### Phase 13: Sub-agenda Auto-separation & Meeting Agenda Analysis 🔴 (Priority: ต่ำ)
+
+**เหตุผล:** ช่วย user ดู transcript/summary แบ่งตาม วาระการประชุม — มีคุณค่ามากสำหรับ formal meetings
+
+#### Artifact 13.1: Agenda Detection & Structured Output
+
+**Backend:**
+- เพิ่ม post-processing step หลัง summarization:
+  1. GPT-4.1 detect agenda transitions จาก transcript
+  2. แบ่ง transcript เป็น sections ตาม agenda
+  3. สร้าง summary แยกสำหรับแต่ละ agenda item
+  4. ระบุ action items และ decisions per agenda
+- Output structure:
+  *[รายละเอียดโค้ดถูกตัดออกเพื่อความกระชับ]*
+- เป็น optional feature — เปิดใช้ได้ใน upload form
+
+**Frontend:**
+- ใน session detail: tab "วาระการประชุม" แยกจาก tab "สรุปรวม"
+- แสดง timeline ของ agenda items + clickable timestamps
+- Export DOCX: เพิ่ม agenda-based structure
+
+**Files ที่ต้องแก้/สร้าง:**
+| Action | File |
+|--------|------|
+| สร้างใหม่ | `backend/app/services/agenda_detector.py` — GPT-4.1 agenda detection |
+| แก้ไข | `backend/app/services/pipeline.py` — เพิ่ม agenda detection step |
+| แก้ไข | `backend/api.py` — เพิ่ม `detect_agenda` toggle |
+| แก้ไข | `backend/app/services/export.py` — agenda-aware DOCX export |
+| แก้ไข | `frontend/src/pages/MainApp.jsx` — agenda results tab |
+| สร้างใหม่ | `frontend/src/components/AgendaView.jsx` — agenda timeline component |
+
+---
+
+### Phase 14: Human Speaker Verification (ยืนยันเสียงโดย Human) 🔴 (Priority: กลาง)
+
+**เหตุผล:** Voice matching อาจผิดพลาด — ให้ user ตรวจสอบและแก้ไข speaker assignment ก่อน export
+
+#### Artifact 14.1: Speaker Review & Manual Override UI
+
+**Backend:**
+- เพิ่ม `speaker_assignments` field ใน session result:
+  *[รายละเอียดโค้ดถูกตัดออกเพื่อความกระชับ]*
+- APIs:
+  - `PUT /api/sessions/{id}/speakers` — update speaker name assignments
+  - `POST /api/sessions/{id}/speakers/add` — เพิ่ม speaker ที่ระบบไม่ detect
+  - `POST /api/sessions/{id}/speakers/merge` — merge 2 speakers เป็น 1 คน
+- Re-generate transcript/summary หลัง speaker correction (optional)
+
+**Frontend:**
+- ใน session detail: panel "ยืนยันผู้พูด"
+  - List speakers ที่ระบบ detect + confidence score
+  - Input field สำหรับแก้ชื่อแต่ละ speaker
+  - ปุ่ม "เพิ่มผู้พูด" (manual add) และ "รวมผู้พูด" (merge)
+  - Highlight segments ใน transcript ตาม speaker ที่เลือก
+  - ปุ่ม "ยืนยันและ Export" — lock assignments + generate DOCX
+
+**Files ที่ต้องแก้/สร้าง:**
+| Action | File |
+|--------|------|
+| แก้ไข | `backend/app/models/session.py` — เพิ่ม speaker_assignments field |
+| แก้ไข | `backend/app/routers/sessions.py` — speaker update endpoints |
+| แก้ไข | `backend/app/services/mongo.py` — update speaker assignments |
+| แก้ไข | `backend/app/services/export.py` — use confirmed assignments |
+| สร้างใหม่ | `frontend/src/components/SpeakerVerification.jsx` |
+| แก้ไข | `frontend/src/pages/MainApp.jsx` — integrate speaker verification |
+
+---
+
+### Phase 15: LLM Settings & Rule-based Templates 🔴 (Priority: ต่ำ)
+
+**เหตุผล:** Admin ต้องการปรับแต่ง prompt templates และ LLM parameters โดยไม่ต้องแก้ code
+
+#### Artifact 15.1: Admin LLM Configuration
+
+**Backend:**
+- สร้าง `LLMConfig` model:
+  *[รายละเอียดโค้ดถูกตัดออกเพื่อความกระชับ]*
+- MongoDB collection: `llm_config`
+- APIs:
+  - `GET /api/admin/llm-configs` — list all configs
+  - `PUT /api/admin/llm-configs/{name}` — update config
+  - `POST /api/admin/llm-configs/test` — test prompt with sample text
+- Pipeline: load config จาก DB แทน hardcoded prompts
+
+**Rule-based Templates:**
+- สร้าง template variables: `{meeting_type}`, `{speaker_list}`, `{language}`, `{custom_prompt}`
+- Admin สร้าง template ใหม่สำหรับ meeting type เฉพาะองค์กร
+
+**Frontend:**
+- Admin Dashboard: tab "LLM Settings"
+  - List meeting types + edit prompt template
+  - Temperature/max_tokens sliders
+  - Test interface: ป้อน sample transcript → ดู output
+
+**Files ที่ต้องแก้/สร้าง:**
+| Action | File |
+|--------|------|
+| สร้างใหม่ | `backend/app/models/llm_config.py` |
+| สร้างใหม่ | `backend/app/routers/llm_config.py` |
+| แก้ไข | `backend/app/services/mongo.py` — llm_config collection |
+| แก้ไข | `backend/app/services/summarizer.py` — load prompts from DB |
+| แก้ไข | `frontend/src/pages/AdminDashboard.jsx` — LLM Settings tab |
+| สร้างใหม่ | `frontend/src/components/admin/LLMConfigEditor.jsx` |
+
+---
+
+### Phase 16: Security Hardening & Performance Tuning 🔴 (Priority: สูง, ทำก่อน Production)
+
+**เหตุผล:** ต้องผ่าน VA Pen Test และรับ production load ได้ก่อน go-live
+
+#### Artifact 16.1: Security Hardening
+
+**Backend:**
+- **Input validation:** sanitize all user inputs, validate file types (magic bytes, not just extension)
+- **Rate limiting:** เข้มขึ้น — login: 5 req/min, upload: 10 req/hour per user
+- **JWT hardening:** short-lived access tokens (15 min) + refresh token rotation
+- **Security headers:** X-Content-Type-Options, X-Frame-Options, CSP, HSTS (via Nginx)
+- **Dependency audit:** `pip audit` / `npm audit` — fix critical CVEs
+- **Secrets scanning:** ensure no secrets in git history
+- **File upload security:**
+  - Scan uploaded audio files (validate audio format, reject executables)
+  - Store files with random UUIDs, never original filenames
+  - Pre-signed URLs สำหรับ MinIO download (ไม่ expose direct URLs)
+
+**VA Pen Test Checklist:**
+- [ ] SQL/NoSQL Injection
+- [ ] XSS (Cross-site scripting)
+- [ ] IDOR (Insecure Direct Object Reference) — ตรวจสอบว่า user A ไม่เข้าถึงไฟล์ user B ได้
+- [ ] Authentication bypass
+- [ ] File upload vulnerabilities
+- [ ] Exposed sensitive endpoints
+
+#### Artifact 16.2: Performance Tuning
+
+**Backend:**
+- **MongoDB indexes:** เพิ่ม indexes สำหรับ frequent queries (user_id, status, created_at)
+- **Celery concurrency:** ปรับ worker concurrency ตาม GPU memory
+- **Redis caching:** cache package limits + user info (TTL: 5 min) เพื่อลด DB queries
+- **API response pagination:** GET /admin/users, GET /activity-logs ต้องมี pagination
+- **WhisperX batch size:** ปรับ batch_size ตาม VRAM
+- **Async file operations:** ใช้ `aiofiles` แทน sync I/O ใน API layer
+
+**Files ที่ต้องแก้/สร้าง:**
+| Action | File |
+|--------|------|
+| สร้างใหม่ | `backend/app/middleware/security_headers.py` |
+| แก้ไข | `backend/app/core/auth.py` — JWT refresh token support |
+| แก้ไข | `backend/api.py` — เพิ่ม security middleware, ปรับ rate limits |
+| แก้ไข | `backend/app/services/mongo.py` — เพิ่ม indexes, Redis caching layer |
+| สร้างใหม่ | `backend/scripts/security_audit.sh` — run dependency audit |
+| แก้ไข | `nginx.conf` — security headers, HSTS |
+| แก้ไข | `docker-compose.yml` — production security settings |
 
 ---
 
@@ -462,12 +979,16 @@ Phase 7 (Google SSO) ────────── standalone (low priority)
 | `user_package` | Phase 2 | mapping user ↔ package + usage tracking |
 | `voice_sample` | Phase 4 | voice clips + embeddings |
 | `password_reset` | Phase 6 | reset tokens (TTL) |
+| `activity_log` | Phase 8 | user action audit trail (TTL: 90 วัน) |
+| `consent_record` | Phase 9 | PDPA consent history per user |
+| `llm_config` | Phase 15 | admin-configurable LLM prompt templates |
 
 ## สรุป New MinIO Buckets
 
 | Bucket | จาก Phase | หน้าที่ |
 |--------|-----------|---------|
 | `voice-samples` | Phase 4 | เก็บ voice enrollment clips |
+| `db-backups` | Phase 11 | เก็บ MongoDB backup archives |
 
 ## สรุป New Environment Variables
 
@@ -477,6 +998,9 @@ Phase 7 (Google SSO) ────────── standalone (low priority)
 | `PII_KEY_VERSION` | Phase 3 | Key rotation version |
 | `GOOGLE_CLIENT_ID` | Phase 7 | Google OAuth |
 | `GOOGLE_CLIENT_SECRET` | Phase 7 | Google OAuth |
+| `BACKUP_RETENTION_DAYS` | Phase 11 | จำนวนวันเก็บ backup (default: 30) |
+| `BACKUP_NOTIFY_EMAIL` | Phase 11 | Email แจ้งผล backup |
+| `JWT_REFRESH_SECRET` | Phase 16 | Secret สำหรับ refresh tokens |
 
 ---
 
@@ -494,163 +1018,14 @@ Phase 7 (Google SSO) ────────── standalone (low priority)
 
 6. **Google SSO + Approval Flow** — ถ้า Google SSO user ต้องรอ approve จะเป็น UX ที่แย่. ควร auto-approve Google SSO users หรือมี separate flow.
 
----
+7. **Activity Log Volume** — ถ้า user มีจำนวนมาก activity_log จะโตเร็ว. ต้องมี TTL index (90 วัน) และ archive strategy สำหรับ compliance records ที่ต้องเก็บนานกว่า.
 
-## Implementation Log
+8. **Multilingual WhisperX** — การ auto-detect language มี accuracy ต่ำกว่าการระบุ language ตรงๆ โดยเฉพาะ Thai-English code-switching. ควร default เป็น "th" และให้ user เลือกเอง.
 
-### Phase 1 — Completed 2026-05-19
+9. **Sub-agenda Detection Accuracy** — GPT-4.1 detect agenda boundaries อาจไม่แม่นยำสำหรับการประชุมที่ไม่เป็นทางการ. ควรเป็น optional feature และให้ user ปรับแก้ได้.
 
-**Scope:** Public Registration + Admin Approval + 3-Level Role Foundation
+10. **Backup Restore Process** — ต้องมี runbook สำหรับ restore จาก backup — ทดสอบ restore process ก่อน production go-live.
 
-**Backend changes:**
-| File | Change |
-|------|--------|
-| `backend/app/models/user.py` | Added: `first_name`, `last_name`, `phone`, `organization`, `status`, `registered_at`, `approved_at`, `approved_by` fields. Added role/status constants. |
-| `backend/app/services/mongo.py` | Added: `get_user_status()`, `register_public_user()`, `get_users_by_status()`, `update_user_status()`, `get_user_count_by_status()`. Login now blocks non-approved users. |
-| `backend/app/routers/auth.py` | Added: `POST /api/auth/register-public` (public registration with validation). Login returns Thai error messages for pending/rejected/suspended. |
-| `backend/app/routers/admin.py` | **New file.** Admin endpoints: `GET /api/admin/users`, `GET /api/admin/users/stats`, `PUT /api/admin/users/{id}/approve\|reject\|suspend\|status`. |
-| `backend/app/core/auth.py` | `get_current_admin()` now allows both `admin` and `superadmin` roles. |
-| `backend/api.py` | Registered `admin_router`. Added `PUT` to CORS allowed methods. |
+11. **VA Pen Test Scope** — ควรทำ pen test กับ environment ที่ใกล้เคียง production มากที่สุด รวมถึง Docker network, MinIO access controls, และ MongoDB authentication.
 
-**Frontend changes:**
-| File | Change |
-|------|--------|
-| `frontend/src/pages/Register.jsx` | **New file.** Public registration form with: first name, last name, email, phone, organization, password + confirm. Shows success state with "รอการอนุมัติ" message. |
-| `frontend/src/pages/AdminDashboard.jsx` | **New file.** Admin dashboard with: stat cards (pending/approved/rejected/suspended), tab filter, user list with approve/reject/suspend actions. |
-| `frontend/src/App.jsx` | Added `/register` and `/admin` routes. |
-| `frontend/src/components/ProtectedRoute.jsx` | Added `requiredRole` prop — supports role-based route protection. |
-| `frontend/src/contexts/AuthContext.jsx` | Exposes `userRole` from JWT payload. |
-| `frontend/src/pages/Login.jsx` | "สมัครสมาชิก" link now routes to `/register`. |
-| `frontend/src/pages/MainApp.jsx` | Navbar shows "จัดการผู้ใช้" link for admin/superadmin roles. |
-
-**New API endpoints:**
-| Method | Endpoint | Auth | Description |
-|--------|----------|:----:|-------------|
-| POST | `/api/auth/register-public` | - | Public user registration (status=pending) |
-| GET | `/api/admin/users` | Admin | List users with optional status filter |
-| GET | `/api/admin/users/stats` | Admin | User count by status |
-| PUT | `/api/admin/users/{id}/approve` | Admin | Approve pending user |
-| PUT | `/api/admin/users/{id}/reject` | Admin | Reject user |
-| PUT | `/api/admin/users/{id}/suspend` | Admin | Suspend user |
-| PUT | `/api/admin/users/{id}/status` | Admin | Set any valid status |
-
-### Phase 2 — Completed 2026-05-19
-
-**Scope:** Package System — 4 public packages + 2 internal (Admin/SuperAdmin), usage tracking with monthly auto-reset, package limit enforcement, dynamic nav badge, and admin package assignment UI.
-
-**Packages implemented (from pricing table):**
-| Package | Price | Tier | Transcription | Max/File | Files/Mo | AI Sum/Mo |
-|---------|-------|:----:|:-------------:|:--------:|:--------:|:---------:|
-| TimSumBasic | 200 ฿/mo | 0 | 180 min | 30 min | 6 | 6 |
-| TimSumPro | 400 ฿/mo | 1 | 900 min | 90 min | 20 | 20 |
-| TimSumEnterprise | 1,000 ฿/mo | 2 | 3,200 min | 300 min | 250 | 250 |
-| TimSumEnterprise (yearly) | 6,000 ฿/yr | 2 | 3,200 min | 300 min | 250 | 250 |
-| TimSumAdmin (internal) | — | 10 | 99,999 min | 99,999 min | 99,999 | 99,999 |
-| TimSumSuperAdmin (internal) | — | 99 | 99,999 min | 99,999 min | 99,999 | 99,999 |
-
-**Backend changes:**
-| File | Change |
-|------|--------|
-| `backend/app/models/package.py` | **New file.** `Package`, `PackageLimits`, `UserPackage`, `UserPackageUsage` models. `DEFAULT_PACKAGES` list, `ADMIN_PACKAGE`, `SUPERADMIN_PACKAGE` constants. |
-| `backend/app/services/mongo.py` | Added collections: `package`, `user_package`. Methods: `upsert_package()`, `get_all_packages()`, `get_package_by_id()`, `get_package_by_name()`, `assign_user_package()`, `get_user_package()` (with auto monthly usage reset), `increment_usage()`, `check_package_limits()`. |
-| `backend/app/routers/package.py` | **New file.** Package endpoints (see table below). |
-| `backend/api.py` | Registered `package_router`. Added `_seed_packages()` startup — seeds all default packages + assigns Admin/SuperAdmin packages to default users. Added package limit check (`check_package_limits()`) before transcribe-summarize. Added `increment_usage(files=1, ai_summaries=1)` after job creation. |
-
-**Frontend changes:**
-| File | Change |
-|------|--------|
-| `frontend/src/components/PackageBadge.jsx` | **New file.** Fetches user's package from API, displays dynamic badge with tier-based colors (Basic=brown, Pro=gold, Enterprise=blue, Admin=gray, SuperAdmin=purple). |
-| `frontend/src/components/SettingsModal.jsx` | Added `UsageBar` component. New "แพ็กเกจ & การใช้งาน" section showing: package name, price, billing cycle, usage reset month, and progress bars for files/AI summaries/transcription minutes (turns red at >= 80%). |
-| `frontend/src/pages/MainApp.jsx` | Replaced hardcoded `<button className="nav-pro-badge">TimSum Pro</button>` with `<PackageBadge token={token} />`. Passes `token` prop to `<SettingsModal>`. |
-| `frontend/src/pages/AdminDashboard.jsx` | Added package assignment: fetches packages list, shows `<select>` dropdown per approved user to assign packages via admin API. |
-
-**New API endpoints:**
-| Method | Endpoint | Auth | Description |
-|--------|----------|:----:|-------------|
-| GET | `/api/user/package` | User | Get own package + usage (auto-resets monthly) |
-| GET | `/api/packages` | User | List public packages (tier < 10) |
-| GET | `/api/admin/packages` | Admin | List all packages including internal |
-| PUT | `/api/admin/users/{id}/package` | Admin | Assign package to user |
-| GET | `/api/admin/users/{id}/package` | Admin | View user's package details |
-
-**Key design decisions:**
-- **Tier-based hierarchy** — public packages (tier 0-2) vs internal (tier 10, 99) enables clean filtering without exposing admin packages.
-- **Monthly auto-reset** — `usage_reset_month` (YYYY-MM format) in `user_package` document; counters reset on first access of new month.
-- **Atomic limit enforcement** — `check_package_limits()` runs before upload, returns 403 with Thai error messages when limits exceeded.
-- **Startup seeding** — `_seed_packages()` uses `upsert_package()` to be idempotent; safe to run on every restart.
-
-### Phase 6 — Completed
-
-**Scope:** User Profile & Settings
-
-**Frontend changes:**
-| File | Change |
-|------|--------|
-| `frontend/src/components/ProfileModal.jsx` | **New file.** Extracted from `SettingsModal`. Contains "บัญชีผู้ใช้" and "แพ็คเกจ & การใช้งาน" sections. |
-| `frontend/src/components/SettingsModal.jsx` | Removed account section, package/usage section, and `UsageBar`. Now only contains theme and about sections. |
-| `frontend/src/pages/MainApp.jsx` | Imported and rendered `ProfileModal`. Added `showProfile` state and wired "โปรไฟล์" button. |
-
-### Phase 5 — Completed 2026-05-19
-
-**Scope:** Custom Summary Prompt — collapsible textarea for user-defined instructions appended to GPT-4.1 summary prompt. Gated by package permission (`custom_prompt_enabled`).
-
-**Backend changes:**
-| File | Change |
-|------|--------|
-| `backend/app/models/package.py` | Added `custom_prompt_enabled: bool = False` to `PackageLimits`. Enabled for TimSumPro, TimSumEnterprise, TimSumAdmin, and TimSumSuperAdmin packages. |
-| `backend/api.py` | Added `custom_prompt` Form parameter to `POST /api/transcribe-summarize`. Validation: max 500 chars. Passed to Celery task. |
-| `backend/app/tasks/transcription.py` | Added `custom_prompt` parameter to `process_audio()`, forwarded to `pipeline.process()`. |
-| `backend/app/services/pipeline.py` | Added `custom_prompt` parameter to `TranscribeSummaryPipeline.process()`, forwarded to `summarize_with_diarization()`. |
-| `backend/app/services/summarizer.py` | Added `custom_prompt` parameter to `summarize_with_diarization()`, `_summarize_standard()`, `_summarize_hierarchical()`, and `_consolidate_summaries()`. Appends as "**คำสั่งเพิ่มเติมจากผู้ใช้:**" section to system prompt when provided. |
-
-**Frontend changes:**
-| File | Change |
-|------|--------|
-| `frontend/src/components/CustomPromptInput.jsx` | **New file.** Collapsible textarea with 500-char limit, character counter, hint text. Hidden by default, expands on click. |
-| `frontend/src/pages/MainApp.jsx` | Added `customPrompt` and `customPromptEnabled` state. Fetches package limits on mount to check `custom_prompt_enabled` permission. Renders `CustomPromptInput` inside meeting type card (only when package allows). Sends `custom_prompt` in FormData on submit. |
-| `frontend/src/styles/index.css` | Added `.custom-prompt-*` styles: toggle button, textarea, footer with hint and character count. |
-
-**Key design decisions:**
-- **Package-gated** — `custom_prompt_enabled` is `false` for Basic tier, `true` for Pro+. Frontend hides the input entirely for Basic users.
-- **Appended to system prompt** — Custom prompt is injected as a clearly labeled section at the end of the system prompt, so it influences but doesn't override the meeting-type-specific structure.
-- **Both summarization paths** — Custom prompt applies to both standard (single-call) and hierarchical (multi-chunk consolidation) paths.
-- **Server-side validation** — 500-char limit enforced both client-side and server-side (API returns 400 if exceeded).
-
-### Phase 7 — Completed 2026-05-21
-
-**Scope:** Google SSO — Sign in with Google using Google Identity Services (GIS). Auto-creates approved users on first login. Links to existing accounts by email.
-
-**Backend changes:**
-| File | Change |
-|------|--------|
-| `backend/requirements.txt` | Added `google-auth>=2.29.0` for Google ID token verification. |
-| `backend/app/models/user.py` | Added `google_id: Optional[str]` field to `User` model for storing Google subject ID. |
-| `backend/app/services/mongo.py` | Added `find_or_create_google_user()` — finds user by email or creates new approved user with random password, quota, and TimSumBasic package assignment. Links `google_id` to existing accounts. |
-| `backend/app/routers/auth.py` | Added `GET /api/auth/google/client-id` (returns client ID for frontend GIS init) and `POST /api/auth/google` (verifies Google ID token via `google.oauth2.id_token`, creates/finds user, returns JWT). |
-| `docker-compose.yml` | Added `GOOGLE_CLIENT_ID` env var to backend service. |
-
-**Frontend changes:**
-| File | Change |
-|------|--------|
-| `frontend/index.html` | Added Google Identity Services script tag (`accounts.google.com/gsi/client`). |
-| `frontend/src/pages/Login.jsx` | Fetches `GOOGLE_CLIENT_ID` from backend on mount. Initializes GIS with `google.accounts.id.initialize()` and renders official Google button via `renderButton()`. On success, sends credential to `POST /api/auth/google` and stores JWT. Falls back to disabled styled button when SSO not configured. |
-| `frontend/src/styles/Login.css` | Added `.login-google-gsi` container style and disabled state for fallback button. |
-
-**New API endpoints:**
-| Method | Endpoint | Auth | Description |
-|--------|----------|:----:|-------------|
-| GET | `/api/auth/google/client-id` | - | Returns Google Client ID for frontend (or `enabled: false` if not configured) |
-| POST | `/api/auth/google` | - | Verify Google credential, create/find user, return JWT |
-
-**New environment variables:**
-| Variable | Description |
-|----------|-------------|
-| `GOOGLE_CLIENT_ID` | Google OAuth 2.0 Client ID (from Google Cloud Console) |
-
-**Key design decisions:**
-- **Frontend-initiated flow** — Uses Google Identity Services (GIS) library with `renderButton()` for the official Google-branded sign-in button. No redirect-based OAuth needed.
-- **Backend-fetched client ID** — Login page fetches `GOOGLE_CLIENT_ID` from `GET /api/auth/google/client-id` instead of baking it into the frontend build. Allows changing the ID without rebuilding.
-- **Auto-approved** — Google SSO users are created with `status=approved` (Google-verified identity). No admin approval needed.
-- **Email linking** — If a user with the same email already exists (registered manually), the Google `sub` ID is linked to their account. They can then use either login method.
-- **Graceful degradation** — When `GOOGLE_CLIENT_ID` is not set, the Google button is disabled and the `POST /api/auth/google` endpoint returns 501. No errors or crashes.
-- **Default package** — New Google users are automatically assigned the TimSumBasic package.
+--

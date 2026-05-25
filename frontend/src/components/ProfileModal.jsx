@@ -1,6 +1,18 @@
 import { useEffect, useState } from 'react'
+import VoiceLibrary from './VoiceLibrary'
 
 const API_BASE = '/api'
+
+const ACTION_LABELS = {
+    login: 'เข้าสู่ระบบ', logout: 'ออกจากระบบ', login_failed: 'เข้าสู่ระบบล้มเหลว',
+    register: 'ลงทะเบียน', upload_audio: 'อัปโหลดไฟล์เสียง',
+    view_session: 'ดูผลการประมวลผล', view_history: 'ดูประวัติ',
+    export_transcript: 'ดาวน์โหลด Transcript', export_summary: 'ดาวน์โหลดสรุป',
+    send_email: 'ส่งอีเมล', update_profile: 'แก้ไขโปรไฟล์',
+    change_password: 'เปลี่ยนรหัสผ่าน', voice_sample_upload: 'อัปโหลด Voice Sample',
+    voice_sample_delete: 'ลบ Voice Sample', consent_given: 'ยินยอมการใช้งาน',
+    consent_withdrawn: 'ถอนการยินยอม',
+}
 
 function UsageBar({ label, used, limit }) {
     const pct = limit > 0 ? Math.min((used / limit) * 100, 100) : 0
@@ -26,6 +38,46 @@ function UsageBar({ label, used, limit }) {
     )
 }
 
+function parseUtcDate(timestamp) {
+    if (!timestamp) return new Date(NaN);
+    let tsStr = String(timestamp);
+    // Add 'Z' only if no timezone info present (+00:00, -05:30, or Z)
+    if (tsStr.includes('T') && !tsStr.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(tsStr)) {
+        tsStr += 'Z';
+    }
+    return new Date(tsStr);
+}
+
+function RelativeTime({ timestamp }) {
+    const [timeString, setTimeString] = useState('');
+
+    useEffect(() => {
+        const updateTime = () => {
+            const date = parseUtcDate(timestamp);
+            const rtf = new Intl.RelativeTimeFormat(navigator.language || 'th-TH', { numeric: 'auto' });
+            const elapsed = (date.getTime() - Date.now()) / 1000;
+            
+            if (Math.abs(elapsed) < 60) {
+                setTimeString(rtf.format(Math.round(elapsed), 'second'));
+            } else if (Math.abs(elapsed) < 3600) {
+                setTimeString(rtf.format(Math.round(elapsed / 60), 'minute'));
+            } else if (Math.abs(elapsed) < 86400) {
+                setTimeString(rtf.format(Math.round(elapsed / 3600), 'hour'));
+            } else if (Math.abs(elapsed) < 2592000) {
+                setTimeString(rtf.format(Math.round(elapsed / 86400), 'day'));
+            } else {
+                setTimeString(date.toLocaleString());
+            }
+        };
+
+        updateTime();
+        const interval = setInterval(updateTime, 60000);
+        return () => clearInterval(interval);
+    }, [timestamp]);
+
+    return <span title={parseUtcDate(timestamp).toLocaleString()}>{timeString}</span>;
+}
+
 function ProfileModal({ isOpen, onClose, userInfo, token }) {
     const [pkgData, setPkgData] = useState(null)
     const [activeTab, setActiveTab] = useState('profile')
@@ -44,6 +96,8 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
     const [profileStatus, setProfileStatus] = useState({ type: '', message: '' })
     const [passwordStatus, setPasswordStatus] = useState({ type: '', message: '' })
     const [isLoading, setIsLoading] = useState(false)
+    const [activityLogs, setActivityLogs] = useState([])
+    const [consentData, setConsentData] = useState(null)
 
     useEffect(() => {
         if (!isOpen) return
@@ -91,6 +145,28 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
                 }
             })
             .catch(() => {})
+
+        // Fetch activity logs and auto-sync every 15s
+        const fetchLogs = () => {
+            fetch(`${API_BASE}/user/activity-logs?limit=10`, {
+                headers: { 'Authorization': `Bearer ${token}` },
+            })
+                .then(r => r.json())
+                .then(data => setActivityLogs(data.logs || []))
+                .catch(() => {})
+        };
+        fetchLogs();
+        const logInterval = setInterval(fetchLogs, 15000);
+
+        // Fetch consent status
+        fetch(`${API_BASE}/consent`, {
+            headers: { 'Authorization': `Bearer ${token}` },
+        })
+            .then(r => r.json())
+            .then(data => setConsentData(data.consents || null))
+            .catch(() => {})
+            
+        return () => clearInterval(logInterval);
     }, [isOpen, token])
 
     if (!isOpen) return null
@@ -98,6 +174,7 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
     const pkg = pkgData?.package
     const usage = pkgData?.usage || {}
     const limits = pkg?.limits || {}
+    const voiceEnrollmentEnabled = !!limits.voice_enrollment_enabled
 
     const handleProfileUpdate = async (e) => {
         e.preventDefault()
@@ -200,6 +277,26 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
                         onClick={() => setActiveTab('package')}
                     >
                         แพ็กเกจ
+                    </button>
+                    {voiceEnrollmentEnabled && (
+                        <button
+                            className={`settings-tab ${activeTab === 'voice' ? 'active' : ''}`}
+                            onClick={() => setActiveTab('voice')}
+                        >
+                            🎙️ คลังเสียง
+                        </button>
+                    )}
+                    <button
+                        className={`settings-tab ${activeTab === 'activity' ? 'active' : ''}`}
+                        onClick={() => setActiveTab('activity')}
+                    >
+                        ประวัติการใช้งาน
+                    </button>
+                    <button
+                        className={`settings-tab ${activeTab === 'consent' ? 'active' : ''}`}
+                        onClick={() => setActiveTab('consent')}
+                    >
+                        การยินยอม (PDPA)
                     </button>
                 </div>
 
@@ -392,6 +489,91 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
                                 <div style={{ textAlign: 'center', padding: '30px 0', color: 'var(--text-secondary)' }}>
                                     กำลังโหลดข้อมูลแพ็กเกจ...
                                 </div>
+                            )}
+                        </section>
+                    )}
+
+                    {activeTab === 'voice' && voiceEnrollmentEnabled && (
+                        <section className="settings-section">
+                            <VoiceLibrary token={token} />
+                        </section>
+                    )}
+
+                    {activeTab === 'activity' && (
+                        <section className="settings-section">
+                            <h3 className="settings-section-title">
+                                <span className="settings-section-icon">📋</span> ประวัติการใช้งาน (10 รายการล่าสุด)
+                            </h3>
+                            {activityLogs.length === 0 ? (
+                                <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '2rem 0' }}>ยังไม่มีประวัติการใช้งาน</p>
+                            ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                    {activityLogs.slice(0, 10).map((log, i) => (
+                                        <div key={i} style={{
+                                            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                                            padding: '0.6rem 0.75rem', borderRadius: '8px',
+                                            background: 'var(--bg-secondary)', fontSize: '0.84rem',
+                                        }}>
+                                            <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
+                                                {ACTION_LABELS[log.action] || log.action}
+                                            </span>
+                                            <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>
+                                                <RelativeTime timestamp={log.timestamp} />
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </section>
+                    )}
+
+                    {activeTab === 'consent' && (
+                        <section className="settings-section">
+                            <h3 className="settings-section-title">
+                                <span className="settings-section-icon">🛡️</span> การยินยอม PDPA
+                            </h3>
+                            {consentData ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                    {Object.entries(consentData).map(([type, info]) => (
+                                        <div key={type} style={{
+                                            padding: '0.9rem 1rem', borderRadius: '10px',
+                                            background: 'var(--bg-secondary)',
+                                            border: `1px solid ${info.consented ? 'rgba(45,138,78,0.25)' : 'var(--border-color)'}`,
+                                            borderLeft: `3px solid ${info.consented ? 'var(--success)' : 'var(--text-muted)'}`,
+                                        }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <div>
+                                                    <span style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                                                        {info.label}
+                                                    </span>
+                                                    {info.required && (
+                                                        <span style={{ marginLeft: '0.5rem', fontSize: '0.72rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'rgba(184,134,11,0.15)', color: 'var(--accent-primary)' }}>
+                                                            จำเป็น
+                                                        </span>
+                                                    )}
+                                                    {info.version_outdated && (
+                                                        <span style={{ marginLeft: '0.4rem', fontSize: '0.72rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'rgba(192,57,43,0.15)', color: 'var(--error)' }}>
+                                                            เวอร์ชั่นใหม่
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <span style={{ fontSize: '0.85rem', fontWeight: 600, color: info.consented ? 'var(--success)' : 'var(--text-muted)' }}>
+                                                    {info.consented ? '✓ ยินยอมแล้ว' : '✗ ยังไม่ยินยอม'}
+                                                </span>
+                                            </div>
+                                            {info.consented_at && (
+                                                <p style={{ margin: '0.3rem 0 0', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                                    ยินยอมเมื่อ: {parseUtcDate(info.consented_at).toLocaleString()} · เวอร์ชัน {info.current_version}
+                                                </p>
+                                            )}
+                                        </div>
+                                    ))}
+                                    <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+                                        หากต้องการถอนการยินยอมที่ไม่บังคับ หรือขอลบข้อมูล กรุณาติดต่อผู้ดูแลระบบ
+                                    </p>
+                                </div>
+                            ) : (
+                                <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '2rem 0' }}>กำลังโหลด...</p>
                             )}
                         </section>
                     )}

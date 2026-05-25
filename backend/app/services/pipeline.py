@@ -81,7 +81,7 @@ class TranscribeSummaryPipeline:
         self.timing['model_load'] = time.time() - start
         logger.info(f"Model loaded in {self.timing['model_load']:.2f}s")
     
-    def process(self, audio_file: str, meeting_type_id: int = 0, on_progress=None, custom_prompt: str = "") -> Dict[str, Any]:
+    def process(self, audio_file: str, meeting_type_id: int = 0, on_progress=None, custom_prompt: str = "", voice_samples: list = None) -> Dict[str, Any]:
         """
         Process audio file: transcribe and summarize.
 
@@ -244,6 +244,8 @@ class TranscribeSummaryPipeline:
             'word_count': speakers_words,
         }
         
+        speaker_labels = list(speakers_time.keys())
+        
         # Step 4: Extract audio clips per speaker (~10s each)
         logger.info("Extracting speaker audio clips...")
         clip_start = time.time()
@@ -257,12 +259,67 @@ class TranscribeSummaryPipeline:
         clip_time = time.time() - clip_start
         logger.info(f"Clip extraction completed in {clip_time:.2f}s")
         
+        # Step: Voice enrollment matching (if voice samples provided)
+        voice_matches = {}
+        if voice_samples:
+            logger.info(f"Attempting voice matching with {len(voice_samples)} enrolled samples...")
+            voice_match_start = time.time()
+            try:
+                from ..services.voice_matching import VoiceMatchingService
+                matcher = VoiceMatchingService(device=self.config.DEVICE)
+
+                # Extract embeddings for each diarized speaker
+                diarized_embeddings = {}
+                for speaker_label in speaker_labels:
+                    emb = matcher.extract_embedding_from_segments(
+                        audio_file=audio_file,
+                        segments=segments,
+                        speaker_label=speaker_label,
+                    )
+                    if emb:
+                        diarized_embeddings[speaker_label] = emb
+
+                # Match against enrolled voice samples
+                if diarized_embeddings:
+                    voice_matches = matcher.match_speakers(
+                        diarized_embeddings=diarized_embeddings,
+                        voice_samples=voice_samples,
+                    )
+                    logger.info(f"Voice matching found {len(voice_matches)} matches")
+                else:
+                    logger.info("No diarized embeddings extracted, skipping voice matching")
+
+                del matcher
+                clear_gpu_memory()
+            except Exception as e:
+                logger.warning(f"Voice matching failed (falling back to GPT detection): {e}")
+                voice_matches = {}
+
+            voice_match_time = time.time() - voice_match_start
+            logger.info(f"Voice matching completed in {voice_match_time:.2f}s")
+        else:
+            voice_match_time = 0
+
         # Step: Detect speaker names from self-introductions
+        # Only detect for speakers NOT already matched by voice enrollment
         logger.info("Detecting speaker names from introductions...")
         detect_start = time.time()
-        speaker_labels = list(speakers_time.keys())
-        suggested_names = detect_speaker_names(transcript_with_speakers, speaker_labels)
+        unmatched_labels = [s for s in speaker_labels if s not in voice_matches]
+        if unmatched_labels:
+            suggested_names = detect_speaker_names(transcript_with_speakers, unmatched_labels)
+        else:
+            suggested_names = {}
         detect_time = time.time() - detect_start
+
+        # Merge voice matches into suggested_names (voice matches take priority)
+        for speaker, match_info in voice_matches.items():
+            suggested_names[speaker] = {
+                "name": match_info["name"],
+                "position": match_info.get("position", ""),
+                "confidence": match_info.get("confidence", 0),
+                "source": "voice_enrollment",
+            }
+
         if suggested_names:
             for speaker, info in suggested_names.items():
                 name_str = info['name']
@@ -302,6 +359,7 @@ class TranscribeSummaryPipeline:
                 'transcription': trans_time,
                 'alignment': align_time,
                 'diarization': diarize_time,
+                'voice_matching': voice_match_time,
                 'summarization': summary_time,
                 'clip_extraction': clip_time,
                 'total': total_time,

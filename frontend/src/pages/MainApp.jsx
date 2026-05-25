@@ -51,6 +51,9 @@ function MainApp() {
     const [showProfile, setShowProfile] = useState(false)
     const [customPrompt, setCustomPrompt] = useState('')
     const [customPromptEnabled, setCustomPromptEnabled] = useState(false)
+    const [voiceMatchingEnabled, setVoiceMatchingEnabled] = useState(false)
+    const [hasVoiceSamples, setHasVoiceSamples] = useState(false)
+    const [useVoiceMatching, setUseVoiceMatching] = useState(false)
     const dropdownRef = useRef(null)
     const resultLoadedRef = useRef(false)
 
@@ -70,6 +73,20 @@ function MainApp() {
             .then(data => {
                 if (data.success && data.package?.package?.limits) {
                     setCustomPromptEnabled(!!data.package.package.limits.custom_prompt_enabled)
+                    setVoiceMatchingEnabled(!!data.package.package.limits.voice_enrollment_enabled)
+                }
+            })
+            .catch(() => {})
+
+        // Check if user has voice samples
+        fetch(`${API_BASE}/voice-samples`, {
+            headers: { 'Authorization': `Bearer ${token}` },
+        })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success && data.count > 0) {
+                    setHasVoiceSamples(true)
+                    setUseVoiceMatching(true)  // Default on when samples exist
                 }
             })
             .catch(() => {})
@@ -185,6 +202,9 @@ function MainApp() {
             }
             if (customPrompt.trim()) {
                 formData.append('custom_prompt', customPrompt.trim())
+            }
+            if (useVoiceMatching && voiceMatchingEnabled && hasVoiceSamples) {
+                formData.append('use_voice_matching', 'true')
             }
 
             const response = await fetch(`${API_BASE}/transcribe-summarize`, {
@@ -379,6 +399,25 @@ function MainApp() {
                                     onChange={setCustomPrompt}
                                     disabled={isProcessing}
                                 />
+                            )}
+
+                            {/* Voice matching toggle */}
+                            {voiceMatchingEnabled && hasVoiceSamples && (
+                                <div className="voice-match-toggle">
+                                    <label className="voice-match-toggle-label">
+                                        <input
+                                            type="checkbox"
+                                            checked={useVoiceMatching}
+                                            onChange={(e) => setUseVoiceMatching(e.target.checked)}
+                                            disabled={isProcessing}
+                                        />
+                                        <span className="voice-match-toggle-icon">🎙️</span>
+                                        <span>ใช้คลังเสียงจับคู่ผู้พูดอัตโนมัติ</span>
+                                    </label>
+                                    <p className="voice-match-toggle-hint">
+                                        ระบบจะเทียบเสียงผู้พูดกับตัวอย่างในคลังเสียงเพื่อระบุชื่ออัตโนมัติ
+                                    </p>
+                                </div>
                             )}
                         </div>
 

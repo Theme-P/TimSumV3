@@ -54,6 +54,8 @@ async def approve_user(
     if not updated:
         raise HTTPException(status_code=404, detail="ไม่พบผู้ใช้")
     logger.info(f"User {user_id} approved by admin {admin.id}")
+    mongo_service.log_activity(str(admin.id), "admin_approve_user",
+                               resource_type="user", resource_id=user_id)
     return {"success": True, "message": "อนุมัติผู้ใช้เรียบร้อย"}
 
 
@@ -68,6 +70,8 @@ async def reject_user(
     if not updated:
         raise HTTPException(status_code=404, detail="ไม่พบผู้ใช้")
     logger.info(f"User {user_id} rejected by admin {admin.id}")
+    mongo_service.log_activity(str(admin.id), "admin_reject_user",
+                               resource_type="user", resource_id=user_id)
     return {"success": True, "message": "ปฏิเสธผู้ใช้เรียบร้อย"}
 
 
@@ -82,6 +86,8 @@ async def suspend_user(
     if not updated:
         raise HTTPException(status_code=404, detail="ไม่พบผู้ใช้")
     logger.info(f"User {user_id} suspended by admin {admin.id}")
+    mongo_service.log_activity(str(admin.id), "admin_suspend_user",
+                               resource_type="user", resource_id=user_id)
     return {"success": True, "message": "ระงับผู้ใช้เรียบร้อย"}
 
 

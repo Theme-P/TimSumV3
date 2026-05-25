@@ -1,14 +1,11 @@
 import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
 
 const AuthContext = createContext(null);
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
-/**
- * Check if a JWT token is expired or about to expire (within 5 minutes).
- */
 function isTokenExpired(token) {
     try {
         const payload = JSON.parse(atob(token.split('.')[1]));
-        // Expired if less than 5 minutes remaining
         return payload.exp * 1000 < Date.now() + 5 * 60 * 1000;
     } catch {
         return true;
@@ -18,19 +15,21 @@ function isTokenExpired(token) {
 export const AuthProvider = ({ children }) => {
     const [token, setToken] = useState(null);
     const [isLoading, setIsLoading] = useState(true);
+    const [consentChecked, setConsentChecked] = useState(false);
+    const [needsConsent, setNeedsConsent] = useState(false);
 
     const logout = useCallback(() => {
         setToken(null);
+        setConsentChecked(false);
+        setNeedsConsent(false);
         localStorage.removeItem('timsum_token');
     }, []);
 
     useEffect(() => {
-        // Check for saved token on initial load
         const savedToken = localStorage.getItem('timsum_token');
         if (savedToken && !isTokenExpired(savedToken)) {
             setToken(savedToken);
         } else if (savedToken) {
-            // Token expired — clean up
             localStorage.removeItem('timsum_token');
         }
         setIsLoading(false);
@@ -39,14 +38,10 @@ export const AuthProvider = ({ children }) => {
     // Auto-logout when token expires
     useEffect(() => {
         if (!token) return;
-
         try {
             const payload = JSON.parse(atob(token.split('.')[1]));
             const expiresIn = payload.exp * 1000 - Date.now();
-            if (expiresIn <= 0) {
-                logout();
-                return;
-            }
+            if (expiresIn <= 0) { logout(); return; }
             const timer = setTimeout(logout, expiresIn);
             return () => clearTimeout(timer);
         } catch {
@@ -54,12 +49,32 @@ export const AuthProvider = ({ children }) => {
         }
     }, [token, logout]);
 
+    // Check consent status whenever token changes
+    useEffect(() => {
+        if (!token) { setConsentChecked(false); setNeedsConsent(false); return; }
+        fetch(`${API_BASE}/api/consent`, {
+            headers: { Authorization: `Bearer ${token}` },
+        })
+            .then(r => r.json())
+            .then(data => {
+                setNeedsConsent(!data.all_required_consented);
+                setConsentChecked(true);
+            })
+            .catch(() => {
+                // If consent check fails, don't block the user
+                setNeedsConsent(false);
+                setConsentChecked(true);
+            });
+    }, [token]);
+
     const login = (newToken) => {
         setToken(newToken);
+        setConsentChecked(false);
         localStorage.setItem('timsum_token', newToken);
     };
 
-    // Extract role from JWT payload
+    const markConsented = () => setNeedsConsent(false);
+
     let userRole = 'user';
     if (token) {
         try {
@@ -75,7 +90,10 @@ export const AuthProvider = ({ children }) => {
             userRole,
             login,
             logout,
-            isLoading
+            isLoading,
+            needsConsent,
+            consentChecked,
+            markConsented,
         }}>
             {children}
         </AuthContext.Provider>

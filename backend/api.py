@@ -35,6 +35,10 @@ from app.routers.quota import router as quota_router
 from app.routers.admin import router as admin_router
 from app.routers.package import router as package_router
 from app.routers.user import router as user_router
+from app.routers.voice_samples import router as voice_samples_router
+from app.routers.activity import router as activity_router
+from app.routers.consent import router as consent_router
+from app.routers.queue import router as queue_router
 from app.core.auth import get_current_user
 from app.models.user import UserData
 
@@ -87,6 +91,10 @@ app.include_router(quota_router)
 app.include_router(admin_router)
 app.include_router(package_router)
 app.include_router(user_router)
+app.include_router(voice_samples_router)
+app.include_router(activity_router)
+app.include_router(consent_router)
+app.include_router(queue_router)
 
 
 # ── Auto-create superadmin & admin users on startup ──
@@ -258,6 +266,7 @@ async def transcribe_summarize(
     meeting_type_id: int = Form(0, description="Meeting type ID (0=auto-detect, 1-11=specific type)"),
     email_recipient: str = Form("", description="Optional: email to auto-send results to"),
     custom_prompt: str = Form("", description="Optional: custom instruction for summary (max 500 chars)"),
+    use_voice_matching: bool = Form(False, description="Use voice enrollment for speaker identification"),
     user: UserData = Depends(get_current_user),
     mongo_service: MongoService = Depends(get_mongo_service),
     storage: StorageService = Depends(get_storage),
@@ -329,6 +338,13 @@ async def transcribe_summarize(
         email_recipient=email_recipient,
     )
 
+    # Fetch voice samples if voice matching is enabled
+    voice_samples_data = None
+    if use_voice_matching:
+        voice_samples_data = mongo_service.get_voice_samples_with_embeddings(str(user.id))
+        if not voice_samples_data:
+            voice_samples_data = None  # No samples to match against
+
     # Send task to Celery worker
     process_audio.delay(
         job_id=job_id,
@@ -338,10 +354,20 @@ async def transcribe_summarize(
         user_id=str(user.id),
         email_recipient=email_recipient,
         custom_prompt=custom_prompt,
+        voice_samples=voice_samples_data,
     )
 
     # Increment usage counters (files + ai summaries)
     mongo_service.increment_usage(str(user.id), files=1, ai_summaries=1)
+
+    # Activity log
+    client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "")
+    mongo_service.log_activity(
+        str(user.id), "upload_audio",
+        resource_type="job", resource_id=job_id,
+        ip_address=client_ip,
+        metadata={"filename": audio.filename, "meeting_type_id": meeting_type_id},
+    )
 
     return {"success": True, "job_id": job_id, "status": "queued"}
 
@@ -575,6 +601,7 @@ async def get_history(
 ):
     """Get user's session history (lightweight list without full transcript)."""
     sessions = mongo_service.get_sessions_by_user(user.id)
+    mongo_service.log_activity(str(user.id), "view_history", resource_type="session")
     return {"success": True, "sessions": sessions}
 
 
@@ -588,6 +615,10 @@ async def get_history_detail(
     session = mongo_service.get_session_by_id(session_id, user.id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    mongo_service.log_activity(
+        str(user.id), "view_session",
+        resource_type="session", resource_id=session_id,
+    )
     return {"success": True, "session": session}
 
 
