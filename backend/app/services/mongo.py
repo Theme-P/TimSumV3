@@ -11,9 +11,10 @@ from app.models.user import User, UserData, Quota, USER_STATUS_APPROVED, VALID_S
 logger = logging.getLogger(__name__)
 
 class MongoService:
-    def __init__(self, uri: str, db_name: str) -> None:
+    def __init__(self, uri: str, db_name: str, cache=None) -> None:
         self.client = MongoClient(uri, tz_aware=True)
         self.db = self.client[db_name]
+        self.cache = cache  # Optional CacheService instance
 
         # Explicitly create collections if they don't exist
         required_collections = [
@@ -31,9 +32,20 @@ class MongoService:
         self.db.activity_log.create_index("timestamp", expireAfterSeconds=90 * 24 * 3600, background=True)   # 90 days
         self.db.session.create_index("created_at", expireAfterSeconds=90 * 24 * 3600, background=True)        # 90 days
         self.db.password_reset.create_index("created_at", expireAfterSeconds=7 * 24 * 3600, background=True)  # 7 days
+
         # Indexes for fast lookups
         self.db.activity_log.create_index([("user_id", 1), ("timestamp", -1)], background=True)
         self.db.consent_record.create_index([("user_id", 1), ("consent_type", 1)], background=True)
+
+        # Performance indexes (Phase 16.2)
+        self.db.user.create_index("email", unique=True, background=True)
+        self.db.quota.create_index("user_id", background=True)
+        self.db.user_package.create_index("user_id", unique=True, background=True)
+        self.db.package.create_index("name", unique=True, background=True)
+        self.db.session.create_index("user_id", background=True)
+        self.db.job.create_index([("user_id", 1), ("status", 1)], background=True)
+        self.db.job.create_index("status", background=True)
+        self.db.voice_sample.create_index("user_id", background=True)
 
     def _hash_password(self, password: str, salt: Optional[str] = None) -> tuple[str, str]:
         """Hash password with salt using PBKDF2."""
@@ -313,13 +325,23 @@ class MongoService:
         existing = self.db.package.find_one({"name": pkg_data["name"]})
         if existing:
             self.db.package.update_one({"_id": existing["_id"]}, {"$set": pkg_data})
+            if self.cache:
+                self.cache.invalidate_packages()
             return str(existing["_id"])
         pkg_data.setdefault("created_at", datetime.now(timezone.utc))
         result = self.db.package.insert_one(pkg_data)
+        if self.cache:
+            self.cache.invalidate_packages()
         return str(result.inserted_id)
 
     def get_all_packages(self, active_only: bool = True) -> list:
         """Get all packages sorted by tier."""
+        cache_key = f"pkg:all:{'active' if active_only else 'all'}"
+        if self.cache:
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                return cached
+
         query = {"is_active": True} if active_only else {}
         cursor = self.db.package.find(query).sort("tier", 1)
         packages = []
@@ -328,6 +350,9 @@ class MongoService:
             if doc.get("created_at"):
                 doc["created_at"] = doc["created_at"].isoformat()
             packages.append(doc)
+
+        if self.cache:
+            self.cache.set(cache_key, packages)
         return packages
 
     def get_package_by_id(self, package_id: str) -> Optional[dict]:
@@ -371,10 +396,17 @@ class MongoService:
             "assigned_by": assigned_by,
         }
         result = self.db.user_package.insert_one(doc)
+        if self.cache:
+            self.cache.invalidate_user_package(user_id)
         return str(result.inserted_id)
 
     def get_user_package(self, user_id: str) -> Optional[dict]:
         """Get user's current package assignment with package details."""
+        if self.cache:
+            cached = self.cache.get_user_package(user_id)
+            if cached is not None:
+                return cached
+
         up = self.db.user_package.find_one({"user_id": ObjectId(user_id)})
         if not up:
             return None
@@ -417,6 +449,9 @@ class MongoService:
                 "limits": pkg.get("limits", {}),
                 "tier": pkg.get("tier", 0),
             }
+
+        if self.cache:
+            self.cache.set_user_package(user_id, result)
         return result
 
     def increment_usage(self, user_id: str, files: int = 0, ai_summaries: int = 0, transcription_minutes: float = 0):
@@ -433,6 +468,8 @@ class MongoService:
                 {"user_id": ObjectId(user_id)},
                 {"$inc": inc},
             )
+            if self.cache:
+                self.cache.invalidate_user_package(user_id)
 
     def check_package_limits(self, user_id: str) -> dict:
         """Check if user is within package limits. Returns {allowed, reason, usage, limits}."""
@@ -466,14 +503,15 @@ class MongoService:
         result = self.db.voice_sample.insert_one(doc)
         return str(result.inserted_id)
 
-    def get_voice_samples_by_user(self, user_id: str) -> list:
-        """Get all voice samples for a user (without embedding vectors)."""
+    def get_voice_samples_by_user(self, user_id: str, limit: int = 100) -> list:
+        """Get voice samples for a user (without embedding vectors)."""
         cursor = (
             self.db.voice_sample.find(
                 {"user_id": ObjectId(user_id)},
                 {"embedding": 0},  # Exclude large embedding vectors
             )
             .sort("created_at", -1)
+            .limit(limit)
         )
         samples = []
         for doc in cursor:
@@ -484,9 +522,9 @@ class MongoService:
             samples.append(doc)
         return samples
 
-    def get_voice_samples_with_embeddings(self, user_id: str) -> list:
-        """Get all voice samples for a user INCLUDING embeddings (for matching)."""
-        cursor = self.db.voice_sample.find({"user_id": ObjectId(user_id)})
+    def get_voice_samples_with_embeddings(self, user_id: str, limit: int = 50) -> list:
+        """Get voice samples for a user INCLUDING embeddings (for matching)."""
+        cursor = self.db.voice_sample.find({"user_id": ObjectId(user_id)}).limit(limit)
         samples = []
         for doc in cursor:
             doc["_id"] = str(doc["_id"])

@@ -9,7 +9,7 @@ class PipelineConfig:
     
     # WhisperX settings
     MODEL_NAME = "large-v3"
-    BATCH_SIZE = 24
+    BATCH_SIZE = int(os.environ.get("WHISPERX_BATCH_SIZE", "24"))
     LANGUAGE = None  # None = auto-detect language (supports Thai, English, mixed)
     
     # Beam search settings

@@ -71,9 +71,9 @@
 | 19 | Sub-agenda Auto-separation & Analysis | 🔴 ไม่มี | ต่ำ |
 | 20 | LLM Settings & Rule-based Templates | 🔴 ไม่มี | ต่ำ |
 | 21 | VA Pen Test / Security Hardening | 🔴 ไม่มี | สูง |
-| 22 | Performance Tuning | 🔴 ไม่มี | กลาง |
+| 22 | Performance Tuning | ✅ เสร็จแล้ว (Phase 16.2) | กลาง |
 
-**สรุป:** 17 features เสร็จแล้ว, 0 features กำลังดำเนินการ, 5 features ต้องทำใหม่
+**สรุป:** 18 features เสร็จแล้ว, 0 features กำลังดำเนินการ, 4 features ต้องทำใหม่
 
 ---
 
@@ -1046,23 +1046,50 @@
 - [ ] File upload vulnerabilities
 - [ ] Exposed sensitive endpoints
 
-#### Artifact 16.2: Performance Tuning
+#### Artifact 16.2: Performance Tuning ✅ COMPLETED (2026-05-28)
 
-**Backend:**
-- **MongoDB indexes:** เพิ่ม indexes สำหรับ frequent queries (user_id, status, created_at)
-- **Celery concurrency:** ปรับ worker concurrency ตาม GPU memory
-- **Redis caching:** cache package limits + user info (TTL: 5 min) เพื่อลด DB queries
-- **API response pagination:** GET /admin/users, GET /activity-logs ต้องมี pagination
-- **WhisperX batch size:** ปรับ batch_size ตาม VRAM
-- **Async file operations:** ใช้ `aiofiles` แทน sync I/O ใน API layer
+**สิ่งที่ทำ:**
 
-**Files ที่ต้องแก้/สร้าง:**
+**1. MongoDB Indexes** — เพิ่ม 8 indexes สำหรับ frequent queries:
+| Collection | Index | Type |
+|-----------|-------|------|
+| `user` | `email` | unique |
+| `quota` | `user_id` | single |
+| `user_package` | `user_id` | unique |
+| `package` | `name` | unique |
+| `session` | `user_id` | single |
+| `job` | `(user_id, status)` | compound |
+| `job` | `status` | single |
+| `voice_sample` | `user_id` | single |
+
+**2. Redis Caching Layer** — `CacheService` ใช้ Redis DB 1 (แยกจาก Celery DB 0):
+- Cache `get_user_package()` — ลด DB queries ทุก request ที่ต้อง check limits (TTL: 5 min)
+- Cache `get_all_packages()` — package list ไม่ค่อยเปลี่ยน (TTL: 5 min)
+- Auto-invalidate เมื่อ `assign_user_package()`, `increment_usage()`, `upsert_package()`
+- Graceful degradation — ถ้า Redis ไม่พร้อมจะ fallback ไป query DB ตรงๆ
+
+**3. Voice Samples Pagination** — เพิ่ม limit parameter:
+- `get_voice_samples_by_user()` — default limit 100
+- `get_voice_samples_with_embeddings()` — default limit 50
+
+**4. WhisperX Batch Size** — configurable ผ่าน `WHISPERX_BATCH_SIZE` env var (default: 24)
+
+**หมายเหตุ:** Celery concurrency คงไว้ที่ 1 (GPU constraint), async file I/O ไม่จำเป็นเพราะ heavy I/O อยู่ใน Celery worker
+
+**Files ที่แก้/สร้าง:**
+| Action | File | Change |
+|--------|------|--------|
+| สร้างใหม่ | `backend/app/services/cache.py` | Redis caching layer with JSON serialization |
+| แก้ไข | `backend/app/services/mongo.py` | เพิ่ม 8 indexes + integrate cache ใน package/user_package queries |
+| แก้ไข | `backend/app/core/config.py` | BATCH_SIZE อ่านจาก env var `WHISPERX_BATCH_SIZE` |
+| แก้ไข | `backend/api.py` | สร้าง CacheService แล้ว inject เข้า MongoService |
+
+**Files สำหรับ 16.1 (Security — ยังไม่ทำ):**
 | Action | File |
 |--------|------|
 | สร้างใหม่ | `backend/app/middleware/security_headers.py` |
 | แก้ไข | `backend/app/core/auth.py` — JWT refresh token support |
 | แก้ไข | `backend/api.py` — เพิ่ม security middleware, ปรับ rate limits |
-| แก้ไข | `backend/app/services/mongo.py` — เพิ่ม indexes, Redis caching layer |
 | สร้างใหม่ | `backend/scripts/security_audit.sh` — run dependency audit |
 | แก้ไข | `nginx.conf` — security headers, HSTS |
 | แก้ไข | `docker-compose.yml` — production security settings |

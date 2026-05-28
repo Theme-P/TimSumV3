@@ -30,6 +30,7 @@ from app.tasks.transcription import process_audio
 
 # New Services & Routers
 from app.services.mongo import MongoService
+from app.services.cache import CacheService
 from app.routers.auth import router as auth_router
 from app.routers.quota import router as quota_router
 from app.routers.admin import router as admin_router
@@ -81,9 +82,10 @@ app.add_middleware(
 )
 
 # Initialize Services
+cache_service = CacheService()
 mongo_uri = os.getenv("MONGO_CONNECTION_STRING", "mongodb://localhost:27017")
 mongo_db = os.getenv("MONGO_DB_NAME", "timsumv3")
-app.state.mongo_service = MongoService(uri=mongo_uri, db_name=mongo_db)
+app.state.mongo_service = MongoService(uri=mongo_uri, db_name=mongo_db, cache=cache_service)
 app.state.storage_service = get_storage_service()
 
 # Include Routers
