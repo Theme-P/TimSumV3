@@ -39,25 +39,7 @@ function AdminDashboard() {
     const [showDropdown, setShowDropdown] = useState(false);
     const [packages, setPackages] = useState([]);
     const [assigningPkg, setAssigningPkg] = useState(null);
-    const [activityLogs, setActivityLogs] = useState([]);
-    const [activityLoading, setActivityLoading] = useState(false);
-    const [queueStats, setQueueStats] = useState(null);
-    const [queueJobs, setQueueJobs] = useState([]);
-    const [queueLoading, setQueueLoading] = useState(false);
-    const [cancellingJob, setCancellingJob] = useState(null);
     const dropdownRef = useRef(null);
-
-    const ACTION_LABELS = {
-        login: 'เข้าสู่ระบบ', logout: 'ออกจากระบบ', login_failed: 'เข้าสู่ระบบล้มเหลว',
-        register: 'ลงทะเบียน', upload_audio: 'อัปโหลดไฟล์เสียง',
-        view_session: 'ดูผลการประมวลผล', view_history: 'ดูประวัติ',
-        export_transcript: 'ดาวน์โหลด Transcript', export_summary: 'ดาวน์โหลดสรุป',
-        send_email: 'ส่งอีเมล', update_profile: 'แก้ไขโปรไฟล์', change_password: 'เปลี่ยนรหัสผ่าน',
-        voice_sample_upload: 'อัปโหลด Voice Sample', voice_sample_delete: 'ลบ Voice Sample',
-        admin_approve_user: 'อนุมัติผู้ใช้', admin_reject_user: 'ปฏิเสธผู้ใช้',
-        admin_suspend_user: 'ระงับผู้ใช้', admin_assign_package: 'กำหนดแพ็กเกจ',
-        consent_given: 'ยินยอม PDPA', consent_withdrawn: 'ถอนการยินยอม',
-    };
 
     const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
 
@@ -149,64 +131,25 @@ function AdminDashboard() {
         }
     };
 
-    const fetchActivityLogs = useCallback(async () => {
-        setActivityLoading(true);
+    const handleDeleteUser = async (userId) => {
+        if (!window.confirm("ยืนยันการลบผู้ใช้? การกระทำนี้จะลบข้อมูลทั้งหมดที่เกี่ยวข้องและไม่สามารถย้อนกลับได้")) return;
+        setActionLoading(userId);
         try {
-            const res = await fetch(`${API_BASE}/admin/activity-logs?limit=100`, { headers });
-            if (res.ok) {
-                const data = await res.json();
-                setActivityLogs(data.logs || []);
-            }
-        } catch { /* ignore */ } finally {
-            setActivityLoading(false);
-        }
-    }, [token]);
-
-    const fetchQueueData = useCallback(async () => {
-        setQueueLoading(true);
-        try {
-            const [statsRes, tasksRes] = await Promise.all([
-                fetch(`${API_BASE}/admin/queue/stats`, { headers }),
-                fetch(`${API_BASE}/admin/queue/tasks?limit=50`, { headers }),
-            ]);
-            if (statsRes.ok) {
-                const data = await statsRes.json();
-                setQueueStats(data.stats || null);
-            }
-            if (tasksRes.ok) {
-                const data = await tasksRes.json();
-                setQueueJobs(data.jobs || []);
-            }
-        } catch { /* ignore */ } finally {
-            setQueueLoading(false);
-        }
-    }, [token]);
-
-    const handleCancelJob = async (jobId) => {
-        if (!window.confirm('ยืนยันการยกเลิกงานนี้?')) return;
-        setCancellingJob(jobId);
-        try {
-            const res = await fetch(`${API_BASE}/admin/queue/tasks/${jobId}`, {
-                method: 'DELETE', headers,
+            const res = await fetch(`${API_BASE}/admin/users/${userId}`, {
+                method: 'DELETE',
+                headers,
             });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.detail || 'ยกเลิกไม่สำเร็จ');
-            fetchQueueData();
+            if (!res.ok) {
+                const data = await res.json();
+                throw new Error(data.detail || 'ลบผู้ใช้ไม่สำเร็จ');
+            }
+            await Promise.all([fetchUsers(activeTab), fetchStats()]);
         } catch (err) {
             alert(err.message);
         } finally {
-            setCancellingJob(null);
+            setActionLoading(null);
         }
     };
-
-    useEffect(() => {
-        if (activeTab === 'activity') fetchActivityLogs();
-        if (activeTab === 'queue') {
-            fetchQueueData();
-            const interval = setInterval(fetchQueueData, 30000);
-            return () => clearInterval(interval);
-        }
-    }, [activeTab]);
 
     const tabs = [
         { key: 'pending', label: 'รอการอนุมัติ', count: stats.pending || 0 },
@@ -214,8 +157,6 @@ function AdminDashboard() {
         { key: 'rejected', label: 'ถูกปฏิเสธ', count: stats.rejected || 0 },
         { key: 'suspended', label: 'ถูกระงับ', count: stats.suspended || 0 },
         { key: 'all', label: 'ทั้งหมด', count: Object.values(stats).reduce((a, b) => a + b, 0) },
-        { key: 'activity', label: 'Activity Log', count: null },
-        { key: 'queue', label: 'Queue Monitor', count: null },
     ];
 
     return (
@@ -232,6 +173,9 @@ function AdminDashboard() {
                     <button className="nav-tab nav-tab-active">
                         จัดการผู้ใช้
                     </button>
+                    <Link to="/admin/monitoring" className="nav-tab" style={{ textDecoration: 'none' }}>
+                        ระบบ & คิว
+                    </Link>
                 </div>
                 <div className="nav-right">
                     <div className="nav-avatar-wrapper" ref={dropdownRef}>
@@ -316,126 +260,6 @@ function AdminDashboard() {
                     ))}
                 </div>
 
-                {/* Queue Monitor Tab */}
-                {activeTab === 'queue' ? (
-                    <div>
-                        {/* Stats */}
-                        {queueStats && (
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px,1fr))', gap: '0.75rem', marginBottom: '1.25rem' }}>
-                                {[
-                                    { label: 'รอดำเนินการ', value: queueStats.queued, color: '#c68a19' },
-                                    { label: 'กำลังประมวลผล', value: queueStats.processing, color: '#2563eb' },
-                                    { label: 'สำเร็จวันนี้', value: queueStats.completed_today, color: '#2d8a4e' },
-                                    { label: 'ล้มเหลว', value: queueStats.failed, color: '#c0392b' },
-                                    { label: 'ยกเลิกแล้ว', value: queueStats.cancelled, color: '#7f8c8d' },
-                                ].map(s => (
-                                    <div key={s.label} style={{
-                                        background: 'var(--surface-elevated)', border: `1.5px solid var(--border-color)`,
-                                        borderRadius: 12, padding: '0.85rem 1rem',
-                                    }}>
-                                        <div style={{ fontSize: '1.6rem', fontWeight: 700, color: s.color }}>{s.value}</div>
-                                        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: 2 }}>{s.label}</div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                        {/* Job list */}
-                        {queueLoading && !queueJobs.length ? (
-                            <div className="history-loading"><div className="history-spinner" /><span>กำลังโหลด...</span></div>
-                        ) : queueJobs.length === 0 ? (
-                            <div className="history-empty"><h3>ยังไม่มีงานในระบบ</h3></div>
-                        ) : (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                                {/* Header */}
-                                <div style={{
-                                    display: 'grid', gridTemplateColumns: '2fr 1.2fr 1fr 1.4fr auto',
-                                    gap: '0.75rem', padding: '0.4rem 0.75rem',
-                                    fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600,
-                                }}>
-                                    <span>ชื่อไฟล์</span><span>User ID</span><span>สถานะ</span><span>เวลา</span><span></span>
-                                </div>
-                                {queueJobs.map(job => {
-                                    const statusColor = {
-                                        queued: '#c68a19', processing: '#2563eb',
-                                        completed: '#2d8a4e', failed: '#c0392b', cancelled: '#7f8c8d',
-                                    }[job.status] || 'var(--text-muted)';
-                                    const canCancel = job.status === 'queued' || job.status === 'processing';
-                                    return (
-                                        <div key={job._id} style={{
-                                            display: 'grid', gridTemplateColumns: '2fr 1.2fr 1fr 1.4fr auto',
-                                            alignItems: 'center', gap: '0.75rem',
-                                            padding: '0.6rem 0.75rem', borderRadius: 8,
-                                            background: 'var(--bg-secondary)', fontSize: '0.83rem',
-                                        }}>
-                                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>
-                                                {job.audio_file || '—'}
-                                            </span>
-                                            <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: '0.74rem', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                {job.user_id}
-                                            </span>
-                                            <span style={{ color: statusColor, fontWeight: 600, fontSize: '0.78rem' }}>
-                                                {job.status}
-                                            </span>
-                                            <span style={{ color: 'var(--text-muted)', fontSize: '0.76rem' }}>
-                                                {job.created_at ? new Date(job.created_at).toLocaleString('th-TH') : '—'}
-                                            </span>
-                                            <span>
-                                                {canCancel && (
-                                                    <button
-                                                        onClick={() => handleCancelJob(job._id)}
-                                                        disabled={cancellingJob === job._id}
-                                                        style={{
-                                                            padding: '0.25rem 0.6rem', borderRadius: 6, border: '1px solid var(--error)',
-                                                            background: 'transparent', color: 'var(--error)', fontSize: '0.74rem',
-                                                            cursor: 'pointer', fontFamily: 'var(--font-thai)',
-                                                            opacity: cancellingJob === job._id ? 0.5 : 1,
-                                                        }}>
-                                                        {cancellingJob === job._id ? '...' : 'ยกเลิก'}
-                                                    </button>
-                                                )}
-                                            </span>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        )}
-                    </div>
-                ) : activeTab === 'activity' ? (
-                    <div>
-                        {activityLoading ? (
-                            <div className="history-loading"><div className="history-spinner" /><span>กำลังโหลด...</span></div>
-                        ) : activityLogs.length === 0 ? (
-                            <div className="history-empty"><h3>ยังไม่มี Activity Log</h3></div>
-                        ) : (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                                {activityLogs.map((log, i) => (
-                                    <div key={i} style={{
-                                        display: 'grid', gridTemplateColumns: '1fr 2fr 1.5fr',
-                                        alignItems: 'center', gap: '0.75rem',
-                                        padding: '0.65rem 1rem', borderRadius: 8,
-                                        background: 'var(--bg-secondary)', fontSize: '0.84rem',
-                                    }}>
-                                        <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: '0.78rem', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                            {log.user_id}
-                                        </span>
-                                        <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
-                                            {ACTION_LABELS[log.action] || log.action}
-                                            {log.metadata?.filename && (
-                                                <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: '0.4rem', fontSize: '0.78rem' }}>
-                                                    · {log.metadata.filename}
-                                                </span>
-                                            )}
-                                        </span>
-                                        <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem', textAlign: 'right' }}>
-                                            {new Date(log.timestamp).toLocaleString('th-TH')}
-                                        </span>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                ) : (
-                <>
                 {/* Error */}
                 {error && (
                     <div className="upload-error" style={{ marginBottom: '1rem' }}>
@@ -580,6 +404,20 @@ function AdminDashboard() {
                                                         อนุมัติ
                                                     </button>
                                                 )}
+                                                {userInfo.role === 'superadmin' && user.role !== 'superadmin' && (
+                                                    <button
+                                                        onClick={() => handleDeleteUser(user._id)}
+                                                        disabled={isActioning}
+                                                        style={{
+                                                            padding: '0.45rem 1rem', borderRadius: 8,
+                                                            border: '1px solid var(--error)', background: 'transparent',
+                                                            color: 'var(--error)', fontWeight: 600, fontSize: '0.82rem',
+                                                            cursor: 'pointer', fontFamily: 'var(--font-thai)',
+                                                            opacity: isActioning ? 0.5 : 1,
+                                                        }}>
+                                                        {isActioning ? '...' : 'ลบผู้ใช้'}
+                                                    </button>
+                                                )}
                                             </div>
                                         </div>
                                     </div>
@@ -587,8 +425,6 @@ function AdminDashboard() {
                             );
                         })}
                     </div>
-                )}
-                </>
                 )}
             </div>
         </div>

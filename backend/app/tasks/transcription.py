@@ -63,16 +63,11 @@ def _auto_send_result_email(
     try:
         file_name_no_ext = os.path.splitext(original_filename)[0] or "meeting"
 
-        # Generate summary DOCX
-        summary_path = os.path.join(temp_dir, f"{file_name_no_ext}_summary.docx")
-        export_summary_to_docx(
-            summary_text=result_payload["summary"],
-            output_path=summary_path,
-            speaker_summary=result_payload["transcript"]["speaker_summary"],
-            meeting_type_id=meeting_type_id,
-        )
-        docx_files = [(summary_path, f"{file_name_no_ext}_Summary")]
+        # Check if summary is valid
+        is_summary_valid = bool(result_payload["summary"]) and "เกิดข้อผิดพลาดในการสรุปผล" not in result_payload["summary"]
 
+        docx_files = []
+        
         # Generate transcript DOCX
         transcript_path = os.path.join(temp_dir, f"{file_name_no_ext}_transcript.docx")
         export_transcript_to_docx(
@@ -83,15 +78,39 @@ def _auto_send_result_email(
         )
         docx_files.append((transcript_path, f"{file_name_no_ext}_Transcription"))
 
-        body = (
-            f"เรียน คุณผู้ใช้งาน\n\n"
-            f"เอกสารของคุณได้รับการประมวลผลเรียบร้อยแล้ว และระบบได้ส่งผลลัพธ์มาให้โดยอัตโนมัติ\n\n"
-            f"รายละเอียด:\n"
-            f"- ชื่อไฟล์: {original_filename}\n"
-            f"- จำนวนไฟล์แนบ: {len(docx_files)} ไฟล์ (Summary + Transcript)\n\n"
-            f"หมายเหตุ: หากต้องการผลลัพธ์พร้อมชื่อ Speaker ที่แก้ไขแล้ว สามารถเข้าไปแก้ที่หน้าเว็บและกด 'ส่งซ้ำ' ได้\n\n"
-            f"ขอบคุณที่ใช้บริการ TimSum V3"
-        )
+        if is_summary_valid:
+            # Generate summary DOCX
+            summary_path = os.path.join(temp_dir, f"{file_name_no_ext}_summary.docx")
+            export_summary_to_docx(
+                summary_text=result_payload["summary"],
+                output_path=summary_path,
+                speaker_summary=result_payload["transcript"]["speaker_summary"],
+                meeting_type_id=meeting_type_id,
+            )
+            docx_files.append((summary_path, f"{file_name_no_ext}_Summary"))
+
+            body = (
+                f"เรียน คุณผู้ใช้งาน\n\n"
+                f"เอกสารของคุณได้รับการประมวลผลเรียบร้อยแล้ว และระบบได้ส่งผลลัพธ์มาให้โดยอัตโนมัติ\n\n"
+                f"รายละเอียด:\n"
+                f"- ชื่อไฟล์: {original_filename}\n"
+                f"- การประมวลผล: บันทึกเสียงและสรุปเอกสาร\n"
+                f"- จำนวนไฟล์แนบ: {len(docx_files)} ไฟล์ (Summary + Transcript)\n\n"
+                f"หมายเหตุ: หากต้องการผลลัพธ์พร้อมชื่อ Speaker ที่แก้ไขแล้ว สามารถเข้าไปแก้ที่หน้าเว็บและกด 'ส่งซ้ำ' ได้\n\n"
+                f"ขอบคุณที่ใช้บริการ TimSum V3"
+            )
+        else:
+            body = (
+                f"เรียน คุณผู้ใช้งาน\n\n"
+                f"เอกสารของคุณได้รับการประมวลผลเรียบร้อยแล้ว\n\n"
+                f"รายละเอียด:\n"
+                f"- ชื่อไฟล์: {original_filename}\n"
+                f"- การประมวลผล: บันทึกเสียง\n"
+                f"- ไฟล์ที่แนบมา: {file_name_no_ext}_Transcription.docx\n\n"
+                f"หมายเหตุ: ระบบสรุปเอกสารไม่สามารถใช้งานได้ในขณะนี้\n"
+                f"คุณสามารถตรวจสอบไฟล์ Transcription เพื่อดูรายละเอียดครบถ้วน\n\n"
+                f"ขอบคุณที่ใช้บริการ TimSum V3"
+            )
 
         ok = email_svc.send_email_with_attachments(
             recipient_email=recipient,

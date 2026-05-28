@@ -12,6 +12,7 @@ import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsOfService from './pages/TermsOfService';
 import MainApp from './pages/MainApp';
 import AdminDashboard from './pages/AdminDashboard';
+import AdminMonitoring from './pages/AdminMonitoring';
 
 function ConsentGate({ children }) {
     const { token, needsConsent, consentChecked, markConsented } = useAuth();
@@ -51,6 +52,16 @@ function App() {
                         element={
                             <ProtectedRoute requiredRole="admin">
                                 <AdminDashboard />
+                            </ProtectedRoute>
+                        }
+                    />
+
+                    {/* Admin Monitoring route */}
+                    <Route
+                        path="/admin/monitoring"
+                        element={
+                            <ProtectedRoute requiredRole="admin">
+                                <AdminMonitoring />
                             </ProtectedRoute>
                         }
                     />

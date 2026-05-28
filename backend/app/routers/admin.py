@@ -5,7 +5,7 @@ from loguru import logger
 
 from app.models.user import UserData, VALID_STATUSES
 from app.services.mongo import MongoService
-from app.core.auth import get_current_admin
+from app.core.auth import get_current_admin, get_current_superadmin
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -108,3 +108,19 @@ async def update_user_status(
         return {"success": True, "message": f"อัปเดตสถานะเป็น {req.status} เรียบร้อย"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: str,
+    superadmin: UserData = Depends(get_current_superadmin),
+    mongo_service: MongoService = Depends(get_mongo_service),
+):
+    """Delete a user completely. Super Admin only."""
+    try:
+        mongo_service.delete_user(user_id)
+        logger.info(f"User {user_id} completely deleted by superadmin {superadmin.id}")
+        mongo_service.log_activity(str(superadmin.id), "superadmin_delete_user",
+                                   resource_type="user", resource_id=user_id)
+        return {"success": True, "message": "ลบผู้ใช้เรียบร้อยแล้ว"}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))

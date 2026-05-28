@@ -73,6 +73,7 @@ services:
     env_file:
       - .env
     environment:
+      - TZ=Asia/Bangkok
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - MONGO_CONNECTION_STRING=mongodb://${MONGO_USER}:${MONGO_PASS}@mongo:27017
       - MINIO_ENDPOINT=minio:9000
@@ -104,6 +105,7 @@ services:
     restart: unless-stopped
     runtime: nvidia
     environment:
+      - TZ=Asia/Bangkok
       - NVIDIA_VISIBLE_DEVICES=all
       - HF_HOME=/app/.cache/huggingface
       - TORCH_HOME=/app/.cache/torch

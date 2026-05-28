@@ -25,6 +25,27 @@ NTC_MODEL = os.getenv("NTC_MODEL", "gpt-4.1")
 # Threshold: transcripts longer than this use hierarchical approach
 HIERARCHICAL_THRESHOLD = 50000  # characters
 
+# Default Fallback Models
+DEFAULT_FALLBACK_MODELS = ["qwen2.5:72b-instruct-q4_K_M", "scb10x/typhoon2.1-gemma3-12b"]
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
+
+def get_llm_config(mongo_service=None) -> dict:
+    if mongo_service:
+        try:
+            config = mongo_service.get_llm_config("default_fallback")
+            if config:
+                return config
+        except Exception as e:
+            logger.error(f"Error getting LLM config from DB: {e}")
+            
+    return {
+        "primary_model": NTC_MODEL,
+        "fallback_models": DEFAULT_FALLBACK_MODELS,
+        "temperature": 0.3,
+        "max_tokens": 4000
+    }
+
+
 
 # ============================================================
 # GPT-4.1 API Helper
@@ -63,6 +84,94 @@ def _call_gpt41(
     except Exception as e:
         logger.error(f"GPT-4.1 API error: {e}")
         return ""
+
+
+def _call_ollama(
+    model_name: str,
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float = 0.3,
+    timeout: int = 120,
+) -> str:
+    """Call Ollama API. Returns content string or empty."""
+    url = f"{OLLAMA_BASE_URL.rstrip('/')}/api/chat"
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "options": {
+            "temperature": temperature,
+        },
+        "stream": False
+    }
+
+    try:
+        resp = requests.post(url, json=payload, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()["message"]["content"].strip()
+    except Exception as e:
+        logger.error(f"Ollama API error ({model_name}): {e}")
+        return ""
+
+
+def _call_llm_with_fallback(
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float = 0.3,
+    max_tokens: int = 4000,
+    timeout: int = 120,
+    mongo_service=None,
+) -> str:
+    """Try primary model (NTC GPT-4.1), fallback to Ollama models if it fails."""
+    config = get_llm_config(mongo_service)
+    
+    # Try primary
+    logger.info(f"Attempting summary with primary model: {config['primary_model']}")
+    result = _call_gpt41(system_prompt, user_prompt, temperature, max_tokens, timeout)
+    
+    if result and result.strip():
+        return result
+        
+    logger.warning("Primary model failed, trying fallback models...")
+    for fallback_model in config["fallback_models"]:
+        logger.info(f"Attempting summary with fallback model: {fallback_model}")
+        result = _call_ollama(fallback_model, system_prompt, user_prompt, temperature, timeout)
+        if result and result.strip():
+            logger.info(f"Successfully generated summary with fallback model {fallback_model}")
+            return result
+            
+    logger.error("All models failed.")
+    return ""
+
+def _create_fallback_summary(transcription_text: str) -> str:
+    """Create a basic fallback summary when all AI models fail."""
+    try:
+        lines = transcription_text.strip().split('\n')
+        # Filter lines with actual content
+        content_lines = [line.strip() for line in lines if line.strip() and len(line.strip()) > 10]
+        
+        if not content_lines:
+            return ""
+            
+        fallback_summary = f"""สรุปการประชุม (สร้างโดยระบบ Fallback)
+
+ข้อมูลการประชุม:
+- ความยาวการประชุม: {len(transcription_text)} ตัวอักษร
+- จำนวนประโยคที่มีเนื้อหา: {len(content_lines)} ประโยค
+
+เนื้อหาสำคัญบางส่วน:
+{chr(10).join(content_lines[:10])}
+
+หมายเหตุ: นี่เป็นสรุปพื้นฐานที่สร้างโดยระบบเนื่องจากการสรุปด้วย AI ประสบปัญหา 
+กรุณาตรวจสอบไฟล์ Transcription เพื่อดูรายละเอียดครบถ้วน"""
+
+        return fallback_summary
+    except Exception as e:
+        logger.error(f"Error creating fallback summary: {e}")
+        return "เกิดข้อผิดพลาดในการสรุปผล กรุณาตรวจสอบไฟล์ถอดเสียง (Transcription)"
+
 
 
 # ============================================================
@@ -286,7 +395,7 @@ def _summarize_chunk(chunk: str, chunk_idx: int, total_chunks: int) -> str:
 
 หมายเหตุ: นี่คือเพียงส่วนหนึ่งของการประชุม กรุณาสรุปเฉพาะเนื้อหาในส่วนนี้อย่างครบถ้วน"""
 
-    return _call_gpt41(system, user, temperature=0.2, max_tokens=4000, timeout=120)
+    return _call_llm_with_fallback(system, user, temperature=0.2, max_tokens=4000, timeout=120)
 
 
 def _consolidate_summaries(
@@ -336,7 +445,7 @@ def _consolidate_summaries(
 4. ยาวและละเอียด ประมาณ 3-5 หน้า A4
 5. ใช้ bullet points และหัวข้อย่อย"""
 
-    result = _call_gpt41(system, user, temperature=0.1, max_tokens=8000, timeout=180)
+    result = _call_llm_with_fallback(system, user, temperature=0.1, max_tokens=8000, timeout=180)
     if not result:
         # Fallback: join summaries
         header = f"สรุป{info['thai']}\n{'=' * 50}\n\n"
@@ -482,8 +591,11 @@ def _summarize_standard(
 **เนื้อหาการประชุม:**
 {transcript_with_speakers}"""
 
-    return _call_gpt41(system, user, temperature=0.4, max_tokens=4000, timeout=120) or \
-           "Error: Summary generation failed"
+    result = _call_llm_with_fallback(system, user, temperature=0.4, max_tokens=4000, timeout=120)
+    if not result:
+        logger.warning("All models failed, using basic fallback summary.")
+        return _create_fallback_summary(transcript_with_speakers)
+    return result
 
 
 def _summarize_hierarchical(

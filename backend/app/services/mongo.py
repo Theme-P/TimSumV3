@@ -19,7 +19,7 @@ class MongoService:
         required_collections = [
             "user", "quota", "session", "job",
             "package", "user_package", "password_reset", "voice_sample",
-            "activity_log", "consent_record",
+            "activity_log", "consent_record", "llm_config"
         ]
         existing_collections = self.db.list_collection_names()
 
@@ -143,11 +143,19 @@ class MongoService:
             raise ValueError(msg)
 
     def delete_user(self, user_id: str) -> None:
-        """Delete a user by their ID."""
-        result = self.db.user.delete_one({"_id": ObjectId(user_id)})
+        """Delete a user by their ID and clean up related data."""
+        obj_id = ObjectId(user_id)
+        result = self.db.user.delete_one({"_id": obj_id})
         if result.deleted_count == 0:
             msg = "User not found"
             raise ValueError(msg)
+        
+        # Cascade deletes for related collections
+        self.db.quota.delete_one({"user_id": obj_id})
+        self.db.user_package.delete_many({"user_id": obj_id})
+        self.db.session.delete_many({"user_id": obj_id})
+        self.db.voice_sample.delete_many({"user_id": obj_id})
+        self.db.consent_record.delete_many({"user_id": str(user_id)})
 
     def delete_quota(self, user_id: ObjectId) -> None:
         """Delete a quota by user ID."""
@@ -809,6 +817,24 @@ class MongoService:
                     doc[ts_field] = doc[ts_field].isoformat()
             jobs.append(doc)
         return jobs
+
+    # ── LLM Config ──
+    def get_llm_config(self, name: str = "default_fallback") -> Optional[dict]:
+        """Get LLM configuration."""
+        doc = self.db.llm_config.find_one({"name": name})
+        if doc:
+            doc["_id"] = str(doc["_id"])
+        return doc
+
+    def upsert_llm_config(self, name: str, config_data: dict) -> str:
+        """Insert or update LLM configuration."""
+        existing = self.db.llm_config.find_one({"name": name})
+        if existing:
+            self.db.llm_config.update_one({"_id": existing["_id"]}, {"$set": config_data})
+            return str(existing["_id"])
+        config_data["name"] = name
+        result = self.db.llm_config.insert_one(config_data)
+        return str(result.inserted_id)
 
     def cancel_job(self, job_id: str) -> bool:
         """Mark a queued/processing job as cancelled. Returns True if updated."""

@@ -1,4 +1,4 @@
-﻿# TimSum V3 — Artifact Planning
+# TimSum V3 — Artifact Planning
 
 > วันที่วิเคราะห์: 2026-05-19
 > สถานะโปรเจกต์: MVP Development Phase
@@ -65,7 +65,7 @@
 | 13 | User Activity Log & Audit Trail | ✅ เสร็จแล้ว | สูง |
 | 14 | Transcript/Summary รองรับ 3 ภาษา (ไทย/อังกฤษ/จีน) | 🔴 ไม่มี | กลาง |
 | 15 | Queue Monitoring (Admin) | ✅ เสร็จแล้ว | กลาง |
-| 16 | Server Resource Monitoring + Ollama Management | 🟡 กำลังดำเนินการ (Phase 10) | กลาง |
+| 16 | Server Resource Monitoring + Ollama Management | ✅ เสร็จแล้ว (Phase 10) | กลาง |
 | 17 | Scheduled Daily DB Backup | 🔴 ไม่มี | กลาง |
 | 18 | Human Speaker Verification (ยืนยันเสียงโดย Human) | 🔴 ไม่มี | กลาง |
 | 19 | Sub-agenda Auto-separation & Analysis | 🔴 ไม่มี | ต่ำ |
@@ -73,11 +73,37 @@
 | 21 | VA Pen Test / Security Hardening | 🔴 ไม่มี | สูง |
 | 22 | Performance Tuning | 🔴 ไม่มี | กลาง |
 
-**สรุป:** 16 features เสร็จแล้ว, 1 features กำลังดำเนินการ, 6 features ต้องทำใหม่
+**สรุป:** 17 features เสร็จแล้ว, 0 features กำลังดำเนินการ, 5 features ต้องทำใหม่
 
 ---
 
 ## Implementation Log
+
+### Phase 10 (Monitoring & Administration Update) — Completed 2026-05-28
+
+**Scope:** แยกหน้า Admin Monitoring ออกจากหน้าจัดการผู้ใช้, เพิ่มฟังก์ชันการลบผู้ใช้งาน (Super Admin), ปรับ UI และแก้ปัญหาเรื่อง Timezone
+
+**Backend changes:**
+| File | Change |
+|------|--------|
+| `backend/app/services/mongo.py` | เพิ่ม logic Cascade Delete ใน `delete_user()` เพื่อลบ quota, user_package, session, voice_sample และ consent_record ที่เกี่ยวข้อง |
+| `backend/app/routers/admin.py` | เพิ่ม endpoint `DELETE /api/admin/users/{user_id}` เพื่อใช้ลบผู้ใช้ |
+| `backend/app/core/auth.py` | เพิ่ม `get_current_superadmin` dependency ไว้ดักเช็คสิทธิ์ Super Admin |
+| `docker-compose.yml` | เพิ่ม `TZ=Asia/Bangkok` เพื่อแก้ปัญหาเวลาของ DOCX export ที่ต่างกับไทย 7 ชั่วโมง |
+
+**Frontend changes:**
+| File | Change |
+|------|--------|
+| `frontend/src/pages/AdminDashboard.jsx` | นำระบบคิวและ System Resource ออกไปแยกเป็นอีกหน้าหนึ่ง, เพิ่มปุ่ม "ลบผู้ใช้" ในตารางผู้ใช้เฉพาะคนที่ Login ด้วยสิทธิ์ Super Admin |
+| `frontend/src/pages/AdminMonitoring.jsx` | **New file.** หน้าระบบคิวและการทำงานของเซิร์ฟเวอร์แยกต่างหาก |
+| `frontend/src/components/admin/ServerResources.jsx` | ปรับขนาด UI ของ Circular Progress (จาก 96px เป็น 72px) เพื่อให้พอดีกับหน้าจอ และแก้ไขเรื่องการแสดงเวลา |
+| `frontend/src/App.jsx` | เพิ่ม Route `/admin/monitoring` |
+
+**System Administration:**
+- ทำการ Enable NTP Time Sync บน Host เพื่อแก้ปัญหา System Clock เดินไม่ตรง (drift) ไป 7 นาที
+- สร้างสคริปต์ลบ Test Users (`test@timsumv3.local`, `testuser@timsumv3.local`)
+
+---
 
 ### Phase 1 — Completed 2026-05-19
 
@@ -710,11 +736,11 @@
 
 ---
 
-### Phase 10: Queue Monitoring & Server Administration 🔴 (Priority: กลาง)
+### Phase 10: Queue Monitoring & Server Administration ✅ COMPLETED (2026-05-28)
 
 **เหตุผล:** Admin ต้องการ visibility ของ Celery queue และ server resources เพื่อ manage workload
 
-#### Artifact 10.1: Queue Monitoring Dashboard
+**Artifact 10.1: Queue Monitoring Dashboard**
 
 **Backend:**
 - APIs:
@@ -727,7 +753,7 @@
 - ใช้ `psutil` หรือ Docker API สำหรับ resource metrics
 
 **Frontend:**
-- Admin Dashboard: tab "ระบบ & Queue"
+- Admin Monitoring (แยกหน้าใหม่จาก Admin Dashboard):
   - Real-time queue stats (jobs waiting, processing, completed today)
   - Server resource gauges (CPU, RAM, GPU, Disk)
   - Task list with status + user + filename
@@ -739,7 +765,7 @@
 |--------|------|
 | สร้างใหม่ | `backend/app/routers/system_admin.py` — queue + system endpoints |
 | แก้ไข | `backend/api.py` — register system_admin router |
-| แก้ไข | `frontend/src/pages/AdminDashboard.jsx` — เพิ่ม System tab |
+| สร้างใหม่ | `frontend/src/pages/AdminMonitoring.jsx` — แยกระบบ System Monitor |
 | สร้างใหม่ | `frontend/src/components/admin/QueueMonitor.jsx` |
 | สร้างใหม่ | `frontend/src/components/admin/ServerResources.jsx` |
 
@@ -820,32 +846,104 @@
 
 **เหตุผล:** ช่วย user ดู transcript/summary แบ่งตาม วาระการประชุม — มีคุณค่ามากสำหรับ formal meetings
 
-#### Artifact 13.1: Agenda Detection & Structured Output
+**แนวคิดหลัก:** ใช้ GPT-4.1 ตรวจจับจุดแบ่งวาระจาก transcript โดยแบ่ง 3 ระดับตามประเภทประชุม:
+
+| ประเภทประชุม | ผลลัพธ์ | ตัวอย่าง |
+|-------------|---------|---------|
+| Formal | แบ่งเป็น **"วาระ"** (Agenda) | ประชุมคณะกรรมการ, สามัญ/วิสามัญ |
+| Semi-formal | แบ่งเป็น **"หัวข้อ"** (Topic) | ประชุมทีม, ติดตามงาน |
+| ไม่มีโครงสร้าง | **ไม่แบ่ง** — แสดง summary เดิม | คุยเรื่องเดียวตลอด |
+
+ใช้ meeting_type (1-11) เป็น hint + ให้ GPT ตัดสินใจขั้นสุดท้ายว่าควรแบ่งหรือไม่
+
+**Pipeline Flow:**
+```
+[เดิม] Audio → WhisperX → Diarization → Speaker ID
+                                            ↓
+[เพิ่ม]                              GPT-4.1 Agenda Detection
+                                      (ได้จุดแบ่ง + ชื่อวาระ)
+                                            ↓
+[เดิม แต่ปรับ]                       Summarize แยกแต่ละวาระ
+                                      + สรุปรวมภาพใหญ่
+```
+
+**MongoDB Storage:** ฝังใน session document เดิม ไม่สร้าง collection ใหม่
+```json
+{
+  "agendas": [
+    {
+      "number": 1,
+      "title": "รับรองรายงานการประชุมครั้งที่ 3/2568",
+      "type": "agenda",
+      "start_time": 0.0,
+      "end_time": 542.3,
+      "start_segment_idx": 0,
+      "end_segment_idx": 45,
+      "speakers": ["คนพูด 1", "คนพูด 3"],
+      "summary": "...",
+      "decisions": ["..."],
+      "action_items": ["..."],
+      "confidence": 0.95
+    }
+  ],
+  "detection_mode": "formal_agenda"
+}
+```
+
+**หมายเหตุ:** Phase นี้เป็น read-only (auto-detect เท่านั้น) — ไม่รวม manual editing UI เพื่อลดความซับซ้อน สามารถต่อยอดเพิ่ม manual editing ในอนาคตได้
+
+#### Artifact 13.1: Agenda Detection Service
 
 **Backend:**
-- เพิ่ม post-processing step หลัง summarization:
-  1. GPT-4.1 detect agenda transitions จาก transcript
-  2. แบ่ง transcript เป็น sections ตาม agenda
-  3. สร้าง summary แยกสำหรับแต่ละ agenda item
-  4. ระบุ action items และ decisions per agenda
-- Output structure:
-  *[รายละเอียดโค้ดถูกตัดออกเพื่อความกระชับ]*
-- เป็น optional feature — เปิดใช้ได้ใน upload form
-
-**Frontend:**
-- ใน session detail: tab "วาระการประชุม" แยกจาก tab "สรุปรวม"
-- แสดง timeline ของ agenda items + clickable timestamps
-- Export DOCX: เพิ่ม agenda-based structure
+- สร้าง `AgendaDetector` class ที่ส่ง transcript ให้ GPT-4.1 พร้อม meeting_type เป็น hint
+- GPT prompt ให้ตอบ structured JSON: `detection_mode` + `items[]` พร้อม segment boundaries
+- รองรับ 3 modes: `formal_agenda` / `topic_segments` / `single_topic`
+- เป็น optional feature — เปิดใช้ผ่าน `detect_agenda` toggle ใน upload form
 
 **Files ที่ต้องแก้/สร้าง:**
 | Action | File |
 |--------|------|
-| สร้างใหม่ | `backend/app/services/agenda_detector.py` — GPT-4.1 agenda detection |
+| สร้างใหม่ | `backend/app/services/agenda_detector.py` — GPT-4.1 agenda detection + parsing |
+
+#### Artifact 13.2: Pipeline & Summarizer Integration
+
+**Backend:**
+- แก้ pipeline ให้เรียก AgendaDetector หลัง diarization เสร็จ (ก่อน summarize)
+- แก้ summarizer ให้สรุปแยกแต่ละวาระ + สรุปรวมภาพใหญ่
+- เก็บ `agendas` array ใน session document
+
+**Files ที่ต้องแก้/สร้าง:**
+| Action | File |
+|--------|------|
 | แก้ไข | `backend/app/services/pipeline.py` — เพิ่ม agenda detection step |
-| แก้ไข | `backend/api.py` — เพิ่ม `detect_agenda` toggle |
-| แก้ไข | `backend/app/services/export.py` — agenda-aware DOCX export |
-| แก้ไข | `frontend/src/pages/MainApp.jsx` — agenda results tab |
-| สร้างใหม่ | `frontend/src/components/AgendaView.jsx` — agenda timeline component |
+| แก้ไข | `backend/app/services/summarizer.py` — สรุปแยกวาระ |
+| แก้ไข | `backend/app/tasks/transcription.py` — pass detect_agenda flag |
+| แก้ไข | `backend/api.py` — เพิ่ม `detect_agenda` Form parameter |
+
+#### Artifact 13.3: Agenda View UI (Read-only)
+
+**Frontend:**
+- ใน session detail: tab "วาระการประชุม" แสดงสรุปแยกวาระ (read-only)
+- แสดง timeline bar + clickable วาระ พร้อม timestamp
+- แสดง detection_mode badge (วาระ/หัวข้อ)
+- Upload form: checkbox "ตรวจจับวาระอัตโนมัติ"
+
+**Files ที่ต้องแก้/สร้าง:**
+| Action | File |
+|--------|------|
+| สร้างใหม่ | `frontend/src/components/AgendaView.jsx` — agenda timeline + per-agenda summary |
+| แก้ไข | `frontend/src/pages/MainApp.jsx` — agenda tab + detect_agenda toggle |
+
+#### Artifact 13.4: Agenda-aware DOCX Export
+
+**Backend:**
+- ถ้ามี agendas → export DOCX แบ่ง section ตามวาระ พร้อม heading + summary + decisions
+- ถ้าไม่มี → export เหมือนเดิม
+
+**Files ที่ต้องแก้/สร้าง:**
+| Action | File |
+|--------|------|
+| แก้ไข | `backend/app/services/export.py` — agenda-aware DOCX structure |
 
 ---
 

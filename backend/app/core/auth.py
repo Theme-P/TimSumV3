@@ -41,3 +41,9 @@ def get_current_admin(user: UserData = Security(get_current_user)) -> UserData:
     if user.role not in ("admin", "superadmin"):
         raise HTTPException(status_code=403, detail="You do not have permission to access this resource!")
     return user
+
+def get_current_superadmin(user: UserData = Security(get_current_user)) -> UserData:
+    """Check if the current user has superadmin role."""
+    if user.role != "superadmin":
+        raise HTTPException(status_code=403, detail="Super Admin permission is required!")
+    return user

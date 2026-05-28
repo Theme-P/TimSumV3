@@ -28,3 +28,6 @@ slowapi>=0.1.9
 
 # Google SSO
 google-auth>=2.29.0
+
+# System Monitor
+psutil>=5.9.0

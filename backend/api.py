@@ -39,6 +39,7 @@ from app.routers.voice_samples import router as voice_samples_router
 from app.routers.activity import router as activity_router
 from app.routers.consent import router as consent_router
 from app.routers.queue import router as queue_router
+from app.routers.system_admin import router as system_admin_router
 from app.core.auth import get_current_user
 from app.models.user import UserData
 
@@ -95,6 +96,7 @@ app.include_router(voice_samples_router)
 app.include_router(activity_router)
 app.include_router(consent_router)
 app.include_router(queue_router)
+app.include_router(system_admin_router, prefix="/api/admin/system", tags=["System Admin"])
 
 
 # ── Auto-create superadmin & admin users on startup ──

@@ -76,7 +76,7 @@ function MainApp() {
                     setVoiceMatchingEnabled(!!data.package.package.limits.voice_enrollment_enabled)
                 }
             })
-            .catch(() => {})
+            .catch(() => { })
 
         // Check if user has voice samples
         fetch(`${API_BASE}/voice-samples`, {
@@ -89,7 +89,7 @@ function MainApp() {
                     setUseVoiceMatching(true)  // Default on when samples exist
                 }
             })
-            .catch(() => {})
+            .catch(() => { })
     }, [token])
 
     useEffect(() => {
@@ -107,7 +107,7 @@ function MainApp() {
             fetch(`${API_BASE}/session/${sessionId}`, {
                 method: 'DELETE',
                 headers: { 'Authorization': `Bearer ${token}` },
-            }).catch(() => {})
+            }).catch(() => { })
         }
         setFile(selectedFile)
         setError(null)
@@ -425,7 +425,7 @@ function MainApp() {
                         <div className="upload-card">
                             <div className="email-section-label">
                                 <span className="email-dot" />
-                                ส่งผลลัพธ์ไปยังอีเมลอัตโนมัติ (ไม่บังคับ)
+                                ส่งผลลัพธ์ไปยังอีเมลอัตโนมัติ
                             </div>
                             <div className="email-input-row">
                                 <input
