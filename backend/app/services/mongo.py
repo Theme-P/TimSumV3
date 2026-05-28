@@ -39,7 +39,7 @@ class MongoService:
 
         # Performance indexes (Phase 16.2)
         self.db.user.create_index("email", unique=True, background=True)
-        self.db.quota.create_index("user_id", background=True)
+        self.db.quota.create_index("user_id", unique=True, background=True)
         self.db.user_package.create_index("user_id", unique=True, background=True)
         self.db.package.create_index("name", unique=True, background=True)
         self.db.session.create_index("user_id", background=True)
