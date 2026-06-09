@@ -41,6 +41,7 @@ from app.routers.activity import router as activity_router
 from app.routers.consent import router as consent_router
 from app.routers.queue import router as queue_router
 from app.routers.system_admin import router as system_admin_router
+from app.routers.meeting_template import router as meeting_template_router
 from app.core.auth import get_current_user
 from app.models.user import UserData
 
@@ -99,7 +100,7 @@ app.include_router(activity_router)
 app.include_router(consent_router)
 app.include_router(queue_router)
 app.include_router(system_admin_router, prefix="/api/admin/system", tags=["System Admin"])
-
+app.include_router(meeting_template_router, prefix="/api/admin/meeting-templates", tags=["Admin Meeting Templates"])
 
 # ── Auto-create superadmin & admin users on startup ──
 def _ensure_default_users():
@@ -148,6 +149,19 @@ def _ensure_default_users():
             print(f"⚠️ Could not auto-create {cfg['role']}: {e}")
 
 _ensure_default_users()
+
+def _seed_meeting_templates():
+    """Seed default meeting templates into the database if missing."""
+    from app.models.meeting_template import get_default_meeting_templates
+    mongo = app.state.mongo_service
+    defaults = get_default_meeting_templates()
+    for template in defaults:
+        # Check if exists, if not upsert
+        existing = mongo.get_meeting_template(template["meeting_type_id"])
+        if not existing:
+            mongo.update_meeting_template(template["meeting_type_id"], template)
+
+_seed_meeting_templates()
 
 
 # ── Migrate legacy users: add status field if missing ──

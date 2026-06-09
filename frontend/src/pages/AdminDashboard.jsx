@@ -167,15 +167,10 @@ function AdminDashboard() {
                     Tim<span>Sum</span>
                 </Link>
                 <div className="nav-tabs">
-                    <Link to="/" className="nav-tab" style={{ textDecoration: 'none' }}>
-                        หน้าหลัก
-                    </Link>
-                    <button className="nav-tab nav-tab-active">
-                        จัดการผู้ใช้
-                    </button>
-                    <Link to="/admin/monitoring" className="nav-tab" style={{ textDecoration: 'none' }}>
-                        ระบบ & คิว
-                    </Link>
+                    <Link to="/" className="nav-tab" style={{ textDecoration: 'none' }}>หน้าหลัก</Link>
+                    <button className="nav-tab nav-tab-active">จัดการผู้ใช้</button>
+                    <Link to="/admin/monitoring" className="nav-tab" style={{ textDecoration: 'none' }}>ระบบ & คิว</Link>
+                    <Link to="/admin/llm" className="nav-tab" style={{ textDecoration: 'none' }}>ตั้งค่า LLM</Link>
                 </div>
                 <div className="nav-right">
                     <div className="nav-avatar-wrapper" ref={dropdownRef}>

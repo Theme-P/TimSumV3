@@ -13,6 +13,7 @@ import TermsOfService from './pages/TermsOfService';
 import MainApp from './pages/MainApp';
 import AdminDashboard from './pages/AdminDashboard';
 import AdminMonitoring from './pages/AdminMonitoring';
+import AdminLLMSettings from './pages/AdminLLMSettings';
 
 function ConsentGate({ children }) {
     const { token, needsConsent, consentChecked, markConsented } = useAuth();
@@ -62,6 +63,16 @@ function App() {
                         element={
                             <ProtectedRoute requiredRole="admin">
                                 <AdminMonitoring />
+                            </ProtectedRoute>
+                        }
+                    />
+
+                    {/* Admin LLM Settings route */}
+                    <Route
+                        path="/admin/llm"
+                        element={
+                            <ProtectedRoute requiredRole="admin">
+                                <AdminLLMSettings />
                             </ProtectedRoute>
                         }
                     />

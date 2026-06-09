@@ -136,15 +136,10 @@ function AdminMonitoring() {
                     Tim<span>Sum</span>
                 </Link>
                 <div className="nav-tabs">
-                    <Link to="/" className="nav-tab" style={{ textDecoration: 'none' }}>
-                        หน้าหลัก
-                    </Link>
-                    <Link to="/admin" className="nav-tab" style={{ textDecoration: 'none' }}>
-                        จัดการผู้ใช้
-                    </Link>
-                    <button className="nav-tab nav-tab-active">
-                        ระบบ & คิว
-                    </button>
+                    <Link to="/" className="nav-tab" style={{ textDecoration: 'none' }}>หน้าหลัก</Link>
+                    <Link to="/admin" className="nav-tab" style={{ textDecoration: 'none' }}>จัดการผู้ใช้</Link>
+                    <button className="nav-tab nav-tab-active">ระบบ & คิว</button>
+                    <Link to="/admin/llm" className="nav-tab" style={{ textDecoration: 'none' }}>ตั้งค่า LLM</Link>
                 </div>
                 <div className="nav-right">
                     <div className="nav-avatar-wrapper" ref={dropdownRef}>

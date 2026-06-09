@@ -69,15 +69,38 @@
 | 17 | Scheduled Daily DB Backup | 🔴 ไม่มี | กลาง |
 | 18 | Human Speaker Verification (ยืนยันเสียงโดย Human) | 🔴 ไม่มี | กลาง |
 | 19 | Sub-agenda Auto-separation & Analysis | ✅ เสร็จแล้ว | ต่ำ |
-| 20 | LLM Settings & Rule-based Templates | 🔴 ไม่มี | ต่ำ |
+| 20 | LLM Settings & Rule-based Templates | ✅ เสร็จแล้ว | ต่ำ |
 | 21 | VA Pen Test / Security Hardening | 🔴 ไม่มี | สูง |
 | 22 | Performance Tuning | ✅ เสร็จแล้ว (Phase 16.2) | กลาง |
 
-**สรุป:** 19 features เสร็จแล้ว, 0 features กำลังดำเนินการ, 3 features ต้องทำใหม่
+**สรุป:** 20 features เสร็จแล้ว, 0 features กำลังดำเนินการ, 2 features ต้องทำใหม่
 
 ---
 
 ## Implementation Log
+
+### Phase 15 (LLM Settings & Rule-based Templates) — Completed 2026-06-09
+
+**Scope:** เพิ่มระบบจัดการการตั้งค่า LLM Config และ Meeting Templates ในหน้า Admin และผูกการใช้งานในฝั่ง Pipeline
+
+**Backend changes:**
+| File | Change |
+|------|--------|
+| `backend/app/models/llm_config.py` | **New file.** กำหนด Pydantic Schema `LLMConfig` พร้อม fallback models และแก้ V2 PyObjectId |
+| `backend/app/models/meeting_template.py` | **New file.** กำหนด Pydantic Schema `MeetingTemplate` จัดการ system_prompt และแก้ V2 PyObjectId |
+| `backend/app/routers/llm_config.py` | **New file.** API endpoints สำหรับจัดการ LLM config |
+| `backend/app/routers/meeting_template.py` | **New file.** API endpoints สำหรับจัดการ Meeting template รวมถึงแก้ไข Dependency Injection (`get_mongo_service`) และ UserData type |
+| `backend/app/services/mongo.py` | เพิ่มฟังก์ชัน get/update สำหรับ config และ template |
+| `backend/app/services/summarizer.py` | นำ config และ template จาก DB ไปประยุกต์ใช้เป็น prompt ตอนสรุปการประชุม |
+
+**Frontend changes:**
+| File | Change |
+|------|--------|
+| `frontend/src/pages/LLMSettings.jsx` | **New file.** หน้า UI สำหรับแอดมินตั้งค่าโมเดลหลักและ fallback |
+| `frontend/src/components/admin/PromptTemplateManager.jsx` | **New file.** Component หน้า UI สำหรับจัดการแก้ไข Prompt สรุปการประชุมประเภทต่างๆ |
+| `frontend/src/App.jsx` | เพิ่ม router ให้หน้าตั้งค่าเข้าถึงได้โดยแอดมิน |
+
+---
 
 ### Phase 19 (Feature 19: Sub-agenda Auto-separation & Analysis) — Completed 2026-06-09
 
@@ -1004,7 +1027,7 @@
 
 ---
 
-### Phase 15: LLM Settings & Rule-based Templates 🔴 (Priority: ต่ำ)
+### Phase 15: LLM Settings & Rule-based Templates ✅ COMPLETED (2026-06-09)
 
 **เหตุผล:** Admin ต้องการปรับแต่ง prompt templates และ LLM parameters โดยไม่ต้องแก้ code
 
@@ -1033,8 +1056,15 @@
 **Files ที่ต้องแก้/สร้าง:**
 | Action | File |
 |--------|------|
-| สร้างใหม่ | `backend/app/models/llm_config.py` |
-| สร้างใหม่ | `backend/app/routers/llm_config.py` |
+| สร้างใหม่ | `backend/app/models/meeting_template.py` — Schema & default templates |
+| สร้างใหม่ | `backend/app/routers/meeting_template.py` — Admin LLM settings endpoints |
+| แก้ไข | `backend/app/services/mongo.py` — CRUD operations for meeting templates |
+| แก้ไข | `backend/app/services/summarizer.py` — Call DB to fetch templates for standard, agenda, and chunked summarization |
+| แก้ไข | `backend/api.py` — Register routes and run `_seed_meeting_templates` |
+| แก้ไข | `backend/app/services/pipeline.py` & `backend/app/tasks/transcription.py` — Pass `mongo_service` to summarizer |
+| สร้างใหม่ | `frontend/src/pages/AdminLLMSettings.jsx` — UI for editing LLM prompts |
+| แก้ไข | `frontend/src/pages/AdminDashboard.jsx` & `frontend/src/pages/AdminMonitoring.jsx` — Add navigation tabs for LLM Settings |
+| แก้ไข | `frontend/src/App.jsx` — Add route for `/admin/llm` |
 | แก้ไข | `backend/app/services/mongo.py` — llm_config collection |
 | แก้ไข | `backend/app/services/summarizer.py` — load prompts from DB |
 | แก้ไข | `frontend/src/pages/AdminDashboard.jsx` — LLM Settings tab |

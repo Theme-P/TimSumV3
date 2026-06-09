@@ -202,6 +202,7 @@ def process_audio(
             on_progress=on_progress,
             custom_prompt=custom_prompt,
             voice_samples=voice_samples,
+            mongo_service=db,
         )
 
         # Pipeline completed — upload clips to MinIO

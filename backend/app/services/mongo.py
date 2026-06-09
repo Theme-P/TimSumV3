@@ -20,7 +20,7 @@ class MongoService:
         required_collections = [
             "user", "quota", "session", "job",
             "package", "user_package", "password_reset", "voice_sample",
-            "activity_log", "consent_record", "llm_config"
+            "activity_log", "consent_record", "llm_config", "meeting_template"
         ]
         existing_collections = self.db.list_collection_names()
 
@@ -900,3 +900,53 @@ class MongoService:
         )
         if result.matched_count == 0:
             raise ValueError("User not found")
+
+    # ── Meeting Templates ──
+
+    def get_meeting_template(self, meeting_type_id: str) -> Optional[dict]:
+        """Get a single meeting template by ID."""
+        cache_key = f"mtg_tmpl:{meeting_type_id}"
+        if self.cache:
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        doc = self.db.meeting_template.find_one({"meeting_type_id": meeting_type_id})
+        if doc:
+            doc["_id"] = str(doc["_id"])
+            if self.cache:
+                self.cache.set(cache_key, doc)
+        return doc
+
+    def get_all_meeting_templates(self) -> list:
+        """Get all meeting templates."""
+        cache_key = "mtg_tmpl:all"
+        if self.cache:
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        cursor = self.db.meeting_template.find()
+        templates = []
+        for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            templates.append(doc)
+        
+        if self.cache:
+            self.cache.set(cache_key, templates)
+        return templates
+
+    def update_meeting_template(self, meeting_type_id: str, data: dict) -> bool:
+        """Update or insert a meeting template."""
+        data.setdefault("updated_at", datetime.now(timezone.utc))
+        result = self.db.meeting_template.update_one(
+            {"meeting_type_id": meeting_type_id},
+            {"$set": data},
+            upsert=True
+        )
+        
+        if self.cache:
+            self.cache.delete(f"mtg_tmpl:{meeting_type_id}")
+            self.cache.delete("mtg_tmpl:all")
+            
+        return result.modified_count > 0 or result.upserted_id is not None

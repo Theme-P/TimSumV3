@@ -45,6 +45,24 @@ def get_llm_config(mongo_service=None) -> dict:
         "max_tokens": 4000
     }
 
+def _get_template_for_meeting(meeting_type_id: int, mongo_service=None) -> dict:
+    """Fetch meeting template from DB or fallback to default."""
+    if mongo_service:
+        try:
+            template = mongo_service.get_meeting_template(meeting_type_id)
+            if template:
+                return template
+        except Exception as e:
+            logger.error(f"Error fetching meeting template from DB: {e}")
+            
+    from ..models.meeting_template import _get_default_system_prompt
+    return {
+        "system_prompt": _get_default_system_prompt(meeting_type_id),
+        "temperature": 0.4,
+        "max_tokens": 4000
+    }
+
+
 
 
 # ============================================================
@@ -445,7 +463,13 @@ def _consolidate_summaries(
 4. ยาวและละเอียด ประมาณ 3-5 หน้า A4
 5. ใช้ bullet points และหัวข้อย่อย"""
 
-    result = _call_llm_with_fallback(system, user, temperature=0.1, max_tokens=8000, timeout=180)
+    result = _call_llm_with_fallback(
+        system, user, 
+        temperature=0.3, 
+        max_tokens=2000, 
+        timeout=120,
+        mongo_service=mongo_service
+    )
     if not result:
         # Fallback: join summaries
         header = f"สรุป{info['thai']}\n{'=' * 50}\n\n"
@@ -490,6 +514,7 @@ def summarize_with_diarization(
     meeting_type_id: int = 0,
     language: str = "Thai",
     custom_prompt: str = "",
+    mongo_service=None,
 ) -> str:
     """
     Summarize transcription with speaker diarization data.
@@ -525,7 +550,7 @@ def summarize_with_diarization(
 
     # Standard: single-call approach for shorter transcripts
     return _summarize_standard(
-        transcript_with_speakers, speaker_summary, meeting_type_id, classification, custom_prompt
+        transcript_with_speakers, speaker_summary, meeting_type_id, classification, custom_prompt, mongo_service=mongo_service
     )
 
 
@@ -535,6 +560,7 @@ def _summarize_standard(
     meeting_type_id: int,
     classification: Dict,
     custom_prompt: str = "",
+    mongo_service=None,
 ) -> str:
     """Standard single-call summary for shorter transcripts."""
     speakers_time = speaker_summary.get('speaking_time', {})
@@ -551,39 +577,19 @@ def _summarize_standard(
 
     speaker_info = "\n".join(speaker_info_lines)
     num_speakers = len(speakers_time)
-    meeting_type_instruction = get_meeting_type_prompt(meeting_type_id)
-    info = MEETING_TYPES.get(meeting_type_id, MEETING_TYPES[0])
-
-    system = f"""คุณคือผู้เชี่ยวชาญวิเคราะห์และสรุปการประชุม
-
-{meeting_type_instruction}
-
-**Output Format:**
-**[{info['thai'] if meeting_type_id > 0 else 'ประเภท'}]: [หัวข้อการประชุม]**
-
-**👥 ผู้เข้าร่วมประชุม ({num_speakers} คน):**
-(วิเคราะห์บทบาทจากเนื้อหาการพูด: ประธาน/ผู้นำเสนอ/ผู้เข้าร่วม)
-
-**📋 สรุปการประชุม:**
-(ตามโครงสร้าง: {info['structure']} - เน้นความละเอียดในส่วน {info.get('key_focus', 'ประเด็นหลัก')})
-
-**📌 การสั่งงาน/มอบหมาย:** (ถ้ามี)
-- **[ผู้สั่ง]** สั่งให้ **[ผู้รับมอบหมาย]** ทำ: [เนื้อหา]
-
-**❓ คำถามสำคัญ:** (ถ้ามี)
-- **[ผู้ถาม]** ถาม: "[คำถาม]" → **[ผู้ตอบ]**: "[คำตอบ]"
-
-**✅ ข้อตกลง/มติ:** (ถ้ามี)
-
-**กฎสำคัญ:**
-- สรุปเป็นภาษาไทยเป็นหลัก แต่คงคำศัพท์เฉพาะทางภาษาอังกฤษไว้ตามเดิม
-- ใช้ bullet points
-- ต้องระบุชื่อผู้พูดในทุกการสั่งงาน/คำถาม/ข้อตกลง
-- เน้นความละเอียดในประเด็นหัวใจหลักของประเภทการประชุมนี้
-- สรุปมติท้ายสุด"""
-
-    if custom_prompt:
+    template_data = _get_template_for_meeting(meeting_type_id, mongo_service=mongo_service)
+    system = template_data["system_prompt"]
+    
+    # Replace placeholder if present, otherwise append
+    if "{custom_prompt}" in system:
+        if custom_prompt:
+            system = system.replace("{custom_prompt}", f"**คำสั่งเพิ่มเติมจากผู้ใช้:**\n{custom_prompt}")
+        else:
+            system = system.replace("{custom_prompt}", "")
+    elif custom_prompt:
         system += f"\n\n**คำสั่งเพิ่มเติมจากผู้ใช้:**\n{custom_prompt}"
+        
+    system = system.replace("{num_speakers}", str(num_speakers))
 
     user = f"""**ข้อมูลผู้พูด:**
 {speaker_info}
@@ -591,7 +597,14 @@ def _summarize_standard(
 **เนื้อหาการประชุม:**
 {transcript_with_speakers}"""
 
-    result = _call_llm_with_fallback(system, user, temperature=0.4, max_tokens=4000, timeout=120)
+    result = _call_llm_with_fallback(
+        system, 
+        user, 
+        temperature=template_data.get("temperature", 0.4), 
+        max_tokens=template_data.get("max_tokens", 4000), 
+        timeout=120,
+        mongo_service=mongo_service
+    )
     if not result:
         logger.warning("All models failed, using basic fallback summary.")
         return _create_fallback_summary(transcript_with_speakers)
@@ -645,6 +658,7 @@ def _summarize_single_agenda(
     total_agendas: int,
     meeting_type_id: int,
     custom_prompt: str = "",
+    mongo_service=None,
 ) -> dict:
     """
     Summarize a single agenda section.
@@ -652,11 +666,12 @@ def _summarize_single_agenda(
     Returns:
         {"summary": str, "decisions": list[str], "action_items": list[str]}
     """
-    info = MEETING_TYPES.get(meeting_type_id, MEETING_TYPES.get(11, MEETING_TYPES[0]))
+    template_data = _get_template_for_meeting(meeting_type_id, mongo_service=mongo_service)
+    thai_name = template_data.get('thai_name', 'ทั่วไป')
 
     system = f"""คุณคือผู้เชี่ยวชาญในการสรุปการประชุม กรุณาสรุปเนื้อหาเฉพาะวาระนี้อย่างละเอียด
 
-**ประเภทการประชุม:** {info.get('thai', 'ทั่วไป')}
+**ประเภทการประชุม:** {thai_name}
 **วาระที่กำลังสรุป:** {agenda_title} (วาระที่ {agenda_number}/{total_agendas})
 
 ตอบเป็น JSON เท่านั้น:
@@ -683,7 +698,13 @@ def _summarize_single_agenda(
 **เนื้อหา:**
 {agenda_transcript}"""
 
-    content = _call_llm_with_fallback(system, user, temperature=0.2, max_tokens=3000, timeout=90)
+    content = _call_llm_with_fallback(
+        system, user, 
+        temperature=template_data.get("temperature", 0.4) if template_data else 0.2, 
+        max_tokens=3000, 
+        timeout=90,
+        mongo_service=mongo_service
+    )
 
     if not content:
         return {"summary": "", "decisions": [], "action_items": []}
@@ -712,6 +733,7 @@ def _generate_executive_summary(
     agenda_summaries: list[dict],
     meeting_type_id: int,
     custom_prompt: str = "",
+    mongo_service=None,
 ) -> str:
     """
     Generate an executive summary from per-agenda summaries.
@@ -737,7 +759,7 @@ def _generate_executive_summary(
     system = f"""คุณคือผู้เชี่ยวชาญในการสรุปการประชุม
 กรุณาสร้าง **สรุปภาพรวมการประชุม (Executive Summary)** จากสรุปแต่ละวาระด้านล่าง
 
-**ประเภทการประชุม:** {info.get('thai', 'ทั่วไป')}
+**ประเภทการประชุม:** {thai_name}
 
 **รูปแบบ:**
 1. เริ่มด้วย "สรุปภาพรวมการประชุม"
@@ -756,10 +778,16 @@ def _generate_executive_summary(
 
 กรุณาสร้างสรุปภาพรวม"""
 
-    result = _call_llm_with_fallback(system, user, temperature=0.2, max_tokens=4000, timeout=120)
+    result = _call_llm_with_fallback(
+        system, user, 
+        temperature=0.2, 
+        max_tokens=template_data.get("max_tokens", 4000), 
+        timeout=120,
+        mongo_service=mongo_service
+    )
     if not result:
         # Fallback: combine agenda summaries as plain text
-        header = f"สรุปภาพรวม{info.get('thai', 'การประชุม')}\n{'=' * 50}\n\n"
+        header = f"สรุปภาพรวม{thai_name}\n{'=' * 50}\n\n"
         return header + combined
 
     return result
@@ -770,6 +798,7 @@ def summarize_with_agendas(
     agendas: list[dict],
     meeting_type_id: int = 0,
     custom_prompt: str = "",
+    mongo_service=None,
 ) -> tuple[str, list[dict]]:
     """
     Summarize meeting with agenda-aware approach.
@@ -820,6 +849,7 @@ def summarize_with_agendas(
             total_agendas=total,
             meeting_type_id=meeting_type_id,
             custom_prompt=custom_prompt,
+            mongo_service=mongo_service,
         )
 
         enriched_agenda = {
@@ -833,7 +863,7 @@ def summarize_with_agendas(
     # Generate executive summary from all per-agenda summaries
     logger.info("Generating executive summary from per-agenda summaries")
     executive_summary = _generate_executive_summary(
-        enriched, meeting_type_id, custom_prompt
+        enriched, meeting_type_id, custom_prompt, mongo_service=mongo_service
     )
 
     logger.info(f"Agenda-aware summarization complete: {len(enriched)} agendas")

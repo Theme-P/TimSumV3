@@ -82,7 +82,7 @@ class TranscribeSummaryPipeline:
         self.timing['model_load'] = time.time() - start
         logger.info(f"Model loaded in {self.timing['model_load']:.2f}s")
     
-    def process(self, audio_file: str, meeting_type_id: int = 0, on_progress=None, custom_prompt: str = "", voice_samples: list = None) -> Dict[str, Any]:
+    def process(self, audio_file: str, meeting_type_id: int = 0, on_progress=None, custom_prompt: str = "", voice_samples: list = None, mongo_service=None) -> Dict[str, Any]:
         """
         Process audio file: transcribe and summarize.
 
@@ -362,6 +362,7 @@ class TranscribeSummaryPipeline:
                 agendas=detected_agendas,
                 meeting_type_id=meeting_type_id,
                 custom_prompt=custom_prompt,
+                mongo_service=mongo_service
             )
         else:
             # Standard single-topic path
@@ -370,6 +371,7 @@ class TranscribeSummaryPipeline:
                 speaker_summary,
                 meeting_type_id=meeting_type_id,
                 custom_prompt=custom_prompt,
+                mongo_service=mongo_service
             )
 
         summary_time = time.time() - summary_start
