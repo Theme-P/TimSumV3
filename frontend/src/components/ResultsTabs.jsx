@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import AgendaTimeline from './AgendaTimeline'
 
 const API_BASE = '/api'
 
@@ -78,7 +79,8 @@ function ResultsTabs({ result, meetingType = 0, token }) {
                 body: JSON.stringify({
                     summary: result.summary,
                     speaker_summary: result.transcript.speaker_summary,
-                    meeting_type_id: meetingType
+                    meeting_type_id: meetingType,
+                    agendas: result.agendas || [],
                 })
             })
 
@@ -124,6 +126,14 @@ function ResultsTabs({ result, meetingType = 0, token }) {
                 >
                     📊 Summary
                 </button>
+                {result.agendas && result.agendas.length > 0 && (
+                    <button
+                        className={`tab ${activeTab === 'agendas' ? 'active' : ''}`}
+                        onClick={() => setActiveTab('agendas')}
+                    >
+                        📋 วาระ ({result.agendas.length})
+                    </button>
+                )}
                 <button
                     className={`tab ${activeTab === 'speakers' ? 'active' : ''}`}
                     onClick={() => setActiveTab('speakers')}
@@ -190,6 +200,14 @@ function ResultsTabs({ result, meetingType = 0, token }) {
                             )
                         })}
                     </div>
+                )}
+
+                {/* Agendas Tab */}
+                {activeTab === 'agendas' && result.agendas && result.agendas.length > 0 && (
+                    <AgendaTimeline
+                        agendas={result.agendas}
+                        detectionMode={result.detection_mode || 'topic_segments'}
+                    />
                 )}
             </div>
 

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = '/api';
 
 export default function ConsentModal({ token, onConsented }) {
     const [marketing, setMarketing] = useState(false);
@@ -11,7 +11,7 @@ export default function ConsentModal({ token, onConsented }) {
         setLoading(true);
         setError('');
         try {
-            const res = await fetch(`${API_BASE}/api/consent`, {
+            const res = await fetch(`${API_BASE}/consent`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
                 body: JSON.stringify({

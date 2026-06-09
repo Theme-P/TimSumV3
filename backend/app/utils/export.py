@@ -141,16 +141,18 @@ def export_summary_to_docx(
     summary_text: str,
     output_path: str,
     speaker_summary: Dict = None,
-    meeting_type_id: int = 0
+    meeting_type_id: int = 0,
+    agendas: Optional[List[Dict]] = None,
 ) -> str:
     """
     Export AI summary to a formatted DOCX file with participant header section.
     
     Args:
-        summary_text: The AI-generated summary text
+        summary_text: The AI-generated summary text (executive summary when agendas exist)
         output_path: Path to save the DOCX file
         speaker_summary: Dictionary containing 'speaking_time' and 'word_count' per speaker
         meeting_type_id: Meeting type ID for position formatting
+        agendas: Optional list of agenda dicts with 'title', 'summary', 'decisions', 'action_items'
     """
     if not DOCX_AVAILABLE:
         return "Error: python-docx not installed. Run: pip install python-docx"
@@ -236,6 +238,62 @@ def export_summary_to_docx(
             doc.add_paragraph()  # Spacer after participant section
     
     # ============ END PARTICIPANT HEADER SECTION ============
+    
+    # ============ AGENDA SECTIONS (Feature 19) ============
+    if agendas:
+        doc.add_heading('รายละเอียดแยกตามวาระ', level=1)
+        
+        for agenda in agendas:
+            agenda_num = agenda.get("agenda_number", "")
+            agenda_title = agenda.get("title", "")
+            
+            # Heading for each agenda
+            doc.add_heading(f"วาระที่ {agenda_num}: {agenda_title}", level=2)
+            
+            # Agenda summary
+            agenda_summary = agenda.get("summary", "")
+            if agenda_summary:
+                lines = agenda_summary.split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith('- ') or line.startswith('• '):
+                        p = doc.add_paragraph(style='List Bullet')
+                        _add_formatted_text(p, line[2:].strip())
+                    else:
+                        p = doc.add_paragraph()
+                        _add_formatted_text(p, line)
+            
+            # Decisions
+            decisions = agenda.get("decisions", [])
+            if decisions:
+                p = doc.add_paragraph()
+                run = p.add_run('มติ/ข้อตกลง:')
+                run.bold = True
+                run.font.size = Pt(11)
+                for decision in decisions:
+                    if decision:
+                        dp = doc.add_paragraph(style='List Bullet')
+                        _add_formatted_text(dp, decision)
+            
+            # Action items
+            action_items = agenda.get("action_items", [])
+            if action_items:
+                p = doc.add_paragraph()
+                run = p.add_run('งานมอบหมาย:')
+                run.bold = True
+                run.font.size = Pt(11)
+                for action in action_items:
+                    if action:
+                        ap = doc.add_paragraph(style='List Bullet')
+                        _add_formatted_text(ap, action)
+            
+            doc.add_paragraph()  # Spacer between agendas
+        
+        # Add executive summary section after agendas
+        doc.add_heading('สรุปภาพรวมการประชุม', level=1)
+    # ============ END AGENDA SECTIONS ============
     
     # Header mapping for structured sections
     section_headers = {

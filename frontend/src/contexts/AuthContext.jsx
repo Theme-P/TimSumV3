@@ -1,7 +1,7 @@
 import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
 
 const AuthContext = createContext(null);
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = '/api';
 
 function isTokenExpired(token) {
     try {
@@ -52,7 +52,7 @@ export const AuthProvider = ({ children }) => {
     // Check consent status whenever token changes
     useEffect(() => {
         if (!token) { setConsentChecked(false); setNeedsConsent(false); return; }
-        fetch(`${API_BASE}/api/consent`, {
+        fetch(`${API_BASE}/consent`, {
             headers: { Authorization: `Bearer ${token}` },
         })
             .then(r => r.json())

@@ -632,3 +632,210 @@ def _summarize_hierarchical(
 
     logger.info(f"Hierarchical summary complete ({len(final)} chars)")
     return final
+
+
+# ============================================================
+# Agenda-aware Summarization (Feature 19)
+# ============================================================
+
+def _summarize_single_agenda(
+    agenda_transcript: str,
+    agenda_title: str,
+    agenda_number: int,
+    total_agendas: int,
+    meeting_type_id: int,
+    custom_prompt: str = "",
+) -> dict:
+    """
+    Summarize a single agenda section.
+
+    Returns:
+        {"summary": str, "decisions": list[str], "action_items": list[str]}
+    """
+    info = MEETING_TYPES.get(meeting_type_id, MEETING_TYPES.get(11, MEETING_TYPES[0]))
+
+    system = f"""คุณคือผู้เชี่ยวชาญในการสรุปการประชุม กรุณาสรุปเนื้อหาเฉพาะวาระนี้อย่างละเอียด
+
+**ประเภทการประชุม:** {info.get('thai', 'ทั่วไป')}
+**วาระที่กำลังสรุป:** {agenda_title} (วาระที่ {agenda_number}/{total_agendas})
+
+ตอบเป็น JSON เท่านั้น:
+```json
+{{
+  "summary": "สรุปเนื้อหาวาระนี้อย่างละเอียด ใช้ bullet points",
+  "decisions": ["มติหรือข้อตกลง (ถ้ามี)"],
+  "action_items": ["การมอบหมายงาน: [ผู้รับมอบหมาย] — [งาน] (ถ้ามี)"]
+}}
+```
+
+**กฎ:**
+- สรุปเป็นภาษาไทยเป็นหลัก คงคำศัพท์เฉพาะทางภาษาอังกฤษ
+- ใช้ bullet points ใน summary
+- ระบุชื่อผู้พูดเมื่อกล่าวถึงการสั่งงาน/ความเห็น
+- ถ้าไม่มีมติหรือ action items ให้ตอบ list ว่าง []
+- ตอบ JSON เท่านั้น ไม่ต้องมีข้อความอื่น"""
+
+    if custom_prompt:
+        system += f"\n\n**คำสั่งเพิ่มเติมจากผู้ใช้:**\n{custom_prompt}"
+
+    user = f"""**วาระ:** {agenda_title}
+
+**เนื้อหา:**
+{agenda_transcript}"""
+
+    content = _call_llm_with_fallback(system, user, temperature=0.2, max_tokens=3000, timeout=90)
+
+    if not content:
+        return {"summary": "", "decisions": [], "action_items": []}
+
+    try:
+        # Strip markdown code fences
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```")[1]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+            cleaned = cleaned.strip()
+
+        result = json.loads(cleaned)
+        return {
+            "summary": result.get("summary", ""),
+            "decisions": result.get("decisions", []) if isinstance(result.get("decisions"), list) else [],
+            "action_items": result.get("action_items", []) if isinstance(result.get("action_items"), list) else [],
+        }
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning(f"Failed to parse agenda summary JSON, using raw text: {exc}")
+        return {"summary": content, "decisions": [], "action_items": []}
+
+
+def _generate_executive_summary(
+    agenda_summaries: list[dict],
+    meeting_type_id: int,
+    custom_prompt: str = "",
+) -> str:
+    """
+    Generate an executive summary from per-agenda summaries.
+
+    Args:
+        agenda_summaries: List of {"agenda_number", "title", "summary", "decisions", "action_items"}
+    """
+    info = MEETING_TYPES.get(meeting_type_id, MEETING_TYPES.get(11, MEETING_TYPES[0]))
+
+    # Build combined input
+    combined_parts: list[str] = []
+    for agenda in agenda_summaries:
+        part = f"=== วาระที่ {agenda['agenda_number']}: {agenda['title']} ===\n"
+        part += agenda.get("summary", "")
+        if agenda.get("decisions"):
+            part += "\nมติ: " + "; ".join(agenda["decisions"])
+        if agenda.get("action_items"):
+            part += "\nงานมอบหมาย: " + "; ".join(agenda["action_items"])
+        combined_parts.append(part)
+
+    combined = "\n\n".join(combined_parts)
+
+    system = f"""คุณคือผู้เชี่ยวชาญในการสรุปการประชุม
+กรุณาสร้าง **สรุปภาพรวมการประชุม (Executive Summary)** จากสรุปแต่ละวาระด้านล่าง
+
+**ประเภทการประชุม:** {info.get('thai', 'ทั่วไป')}
+
+**รูปแบบ:**
+1. เริ่มด้วย "สรุปภาพรวมการประชุม"
+2. สรุปใจความสำคัญจากทุกวาระอย่างกระชับ
+3. รวบรวมมติที่ประชุมทั้งหมด
+4. รวบรวมงานมอบหมายทั้งหมด
+5. ใช้ bullet points
+6. สรุปเป็นภาษาไทยเป็นหลัก"""
+
+    if custom_prompt:
+        system += f"\n\n**คำสั่งเพิ่มเติมจากผู้ใช้:**\n{custom_prompt}"
+
+    user = f"""จำนวนวาระทั้งหมด: {len(agenda_summaries)} วาระ
+
+{combined}
+
+กรุณาสร้างสรุปภาพรวม"""
+
+    result = _call_llm_with_fallback(system, user, temperature=0.2, max_tokens=4000, timeout=120)
+    if not result:
+        # Fallback: combine agenda summaries as plain text
+        header = f"สรุปภาพรวม{info.get('thai', 'การประชุม')}\n{'=' * 50}\n\n"
+        return header + combined
+
+    return result
+
+
+def summarize_with_agendas(
+    segments: list[dict],
+    agendas: list[dict],
+    meeting_type_id: int = 0,
+    custom_prompt: str = "",
+) -> tuple[str, list[dict]]:
+    """
+    Summarize meeting with agenda-aware approach.
+
+    Produces per-agenda summaries + an executive summary.
+
+    Args:
+        segments: Transcript segments (with 'text', 'speaker', 'start', 'end')
+        agendas: List of agenda dicts from detect_agendas()
+        meeting_type_id: Meeting type (0=auto, 1-11=specific)
+        custom_prompt: Optional user instruction
+
+    Returns:
+        (executive_summary: str, enriched_agendas: list[dict])
+        Each enriched agenda has added: "summary", "decisions", "action_items"
+    """
+    total = len(agendas)
+    logger.info(f"Starting agenda-aware summarization for {total} agendas")
+
+    enriched: list[dict] = []
+
+    for agenda in agendas:
+        start_idx = agenda["start_segment_idx"]
+        end_idx = agenda["end_segment_idx"]
+        title = agenda["title"]
+        number = agenda["agenda_number"]
+
+        # Slice transcript for this agenda
+        agenda_segments = segments[start_idx : end_idx + 1]
+        agenda_lines = []
+        for seg in agenda_segments:
+            speaker = seg.get("speaker", "?")
+            text = seg.get("text", "").strip()
+            if text:
+                agenda_lines.append(f"[{speaker}]: {text}")
+
+        agenda_transcript = "\n".join(agenda_lines)
+
+        logger.info(
+            f"Summarizing agenda {number}/{total}: '{title}' "
+            f"(segments {start_idx}-{end_idx}, {len(agenda_transcript)} chars)"
+        )
+
+        result = _summarize_single_agenda(
+            agenda_transcript=agenda_transcript,
+            agenda_title=title,
+            agenda_number=number,
+            total_agendas=total,
+            meeting_type_id=meeting_type_id,
+            custom_prompt=custom_prompt,
+        )
+
+        enriched_agenda = {
+            **agenda,
+            "summary": result["summary"],
+            "decisions": result["decisions"],
+            "action_items": result["action_items"],
+        }
+        enriched.append(enriched_agenda)
+
+    # Generate executive summary from all per-agenda summaries
+    logger.info("Generating executive summary from per-agenda summaries")
+    executive_summary = _generate_executive_summary(
+        enriched, meeting_type_id, custom_prompt
+    )
+
+    logger.info(f"Agenda-aware summarization complete: {len(enriched)} agendas")
+    return executive_summary, enriched
+

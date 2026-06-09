@@ -68,16 +68,38 @@
 | 16 | Server Resource Monitoring + Ollama Management | ✅ เสร็จแล้ว (Phase 10) | กลาง |
 | 17 | Scheduled Daily DB Backup | 🔴 ไม่มี | กลาง |
 | 18 | Human Speaker Verification (ยืนยันเสียงโดย Human) | 🔴 ไม่มี | กลาง |
-| 19 | Sub-agenda Auto-separation & Analysis | 🔴 ไม่มี | ต่ำ |
+| 19 | Sub-agenda Auto-separation & Analysis | ✅ เสร็จแล้ว | ต่ำ |
 | 20 | LLM Settings & Rule-based Templates | 🔴 ไม่มี | ต่ำ |
 | 21 | VA Pen Test / Security Hardening | 🔴 ไม่มี | สูง |
 | 22 | Performance Tuning | ✅ เสร็จแล้ว (Phase 16.2) | กลาง |
 
-**สรุป:** 18 features เสร็จแล้ว, 0 features กำลังดำเนินการ, 4 features ต้องทำใหม่
+**สรุป:** 19 features เสร็จแล้ว, 0 features กำลังดำเนินการ, 3 features ต้องทำใหม่
 
 ---
 
 ## Implementation Log
+
+### Phase 19 (Feature 19: Sub-agenda Auto-separation & Analysis) — Completed 2026-06-09
+
+**Scope:** เพิ่มระบบแบ่งวาระการประชุมอัตโนมัติ (Hybrid: Rule-based Regex + LLM Context Detection) และสร้างสรุปแยกรายวาระ พร้อมมติ/ข้อตกลงและงานมอบหมาย รวมถึงการสร้างหน้า UI แสดงวาระและการส่งออก DOCX แบบแยกวาระ
+
+**Backend changes:**
+| File | Change |
+|------|--------|
+| `backend/app/services/agenda_detector.py` | **New file.** ใช้ Rule-based pattern matching ค้นหา keyword วาระ ผสมผสานกับการใช้ LLM ช่วยตรวจสอบความถูกต้อง (Hybrid approach) |
+| `backend/app/services/summarizer.py` | เพิ่มฟังก์ชัน `_summarize_single_agenda`, `_generate_executive_summary` และ `summarize_with_agendas` เพื่อรองรับการสรุปแยกตามวาระ และทำภาพรวม (Executive Summary) |
+| `backend/app/services/pipeline.py` | แทรกขั้นตอน agenda detection ก่อนการ summarization ถ้าระบุว่ามีวาระจะเข้า flow ใหม่ `summarize_with_agendas` |
+| `backend/app/tasks/transcription.py` | บันทึกข้อมูล `agendas` และ `detection_mode` ลงใน session document และรองรับการส่งผ่าน agendas เข้าสู่ export DOCX |
+| `backend/app/utils/export.py` | เพิ่มการรับพารามิเตอร์ `agendas` สร้างส่วน "รายละเอียดแยกตามวาระ" ด้วย Heading 2 และสรุปย่อย มติ และงานมอบหมาย ก่อนเข้าสู่สรุปภาพรวม |
+
+**Frontend changes:**
+| File | Change |
+|------|--------|
+| `frontend/src/components/AgendaTimeline.jsx` | **New file.** Component แบบ Timeline แสดงวาระการประชุม เวลาที่พูด ผู้พูด สรุป มติ และงานมอบหมาย |
+| `frontend/src/components/ResultsTabs.jsx` | เพิ่มแท็บ "วาระ" หากในผลลัพธ์มีการตรวจพบวาระการประชุม (แทรกรวมกับแท็บเดิม) |
+| `frontend/src/styles/index.css` | เพิ่ม CSS คลาสสำหรับรูปแบบ Timeline (`.agenda-timeline`, `.agenda-item`, etc.) |
+
+---
 
 ### Phase 10 (Monitoring & Administration Update) — Completed 2026-05-28
 

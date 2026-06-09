@@ -86,6 +86,7 @@ def _auto_send_result_email(
                 output_path=summary_path,
                 speaker_summary=result_payload["transcript"]["speaker_summary"],
                 meeting_type_id=meeting_type_id,
+                agendas=result_payload.get("agendas"),
             )
             docx_files.append((summary_path, f"{file_name_no_ext}_Summary"))
 
@@ -251,6 +252,8 @@ def process_audio(
             "speaker_clips": speaker_clips_response,
             "clip_prefix": clip_prefix,
             "suggested_names": result.get("suggested_names", {}),
+            "agendas": result.get("agendas", []),
+            "detection_mode": result.get("detection_mode", "single_topic"),
             "created_at": datetime.now(timezone.utc),
         }
         session_result = db.session.insert_one(session_doc)
@@ -271,6 +274,8 @@ def process_audio(
             "speaker_clips": speaker_clips_response,
             "clip_prefix": clip_prefix,
             "suggested_names": result.get("suggested_names", {}),
+            "agendas": result.get("agendas", []),
+            "detection_mode": result.get("detection_mode", "single_topic"),
         }
 
         _update_job(db, job_id, {

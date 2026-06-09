@@ -11,7 +11,8 @@ from ..core.config import PipelineConfig
 
 logger = logging.getLogger(__name__)
 from ..models.meeting import MEETING_TYPES
-from ..services.summarizer import summarize_with_diarization, detect_speaker_names
+from ..services.summarizer import summarize_with_diarization, detect_speaker_names, summarize_with_agendas
+from ..services.agenda_detector import detect_agendas
 from ..services.text_cleaner import clean_transcription
 from ..utils.formatting import format_speaker, format_time
 from ..utils.audio_clip import extract_speaker_clips
@@ -330,17 +331,47 @@ class TranscribeSummaryPipeline:
             logger.info("No speaker introductions detected")
         logger.info(f"Name detection completed in {detect_time:.2f}s")
         
-        # Step 3: Run summary with diarization data
+        # Step: Agenda detection (automatic — runs on every transcript)
+        _report("detecting_agendas", 70)
+        logger.info("Detecting agenda/topic boundaries...")
+        agenda_start = time.time()
+        agenda_result = detect_agendas(
+            segments=segments,
+            meeting_type_id=meeting_type_id,
+        )
+        agenda_time = time.time() - agenda_start
+        detected_agendas = agenda_result.get("agendas", [])
+        detection_mode = agenda_result.get("detection_mode", "single_topic")
+        logger.info(
+            f"Agenda detection completed in {agenda_time:.2f}s — "
+            f"mode: {detection_mode}, agendas: {len(detected_agendas)}"
+        )
+
+        # Step: Run summary (agenda-aware or standard)
         _report("summarizing", 75)
         meeting_info = MEETING_TYPES.get(meeting_type_id, MEETING_TYPES[0])
         logger.info(f"Running AI Summary ({meeting_info['thai']})...")
         summary_start = time.time()
-        summary_text = summarize_with_diarization(
-            transcript_with_speakers,
-            speaker_summary,
-            meeting_type_id=meeting_type_id,
-            custom_prompt=custom_prompt,
-        )
+
+        enriched_agendas = []
+        if detected_agendas:
+            # Multi-agenda path: summarize each agenda + executive summary
+            logger.info(f"Using agenda-aware summarization ({len(detected_agendas)} agendas)")
+            summary_text, enriched_agendas = summarize_with_agendas(
+                segments=segments,
+                agendas=detected_agendas,
+                meeting_type_id=meeting_type_id,
+                custom_prompt=custom_prompt,
+            )
+        else:
+            # Standard single-topic path
+            summary_text = summarize_with_diarization(
+                transcript_with_speakers,
+                speaker_summary,
+                meeting_type_id=meeting_type_id,
+                custom_prompt=custom_prompt,
+            )
+
         summary_time = time.time() - summary_start
         logger.info(f"Summary API completed in {summary_time:.2f}s")
         
@@ -360,6 +391,7 @@ class TranscribeSummaryPipeline:
                 'alignment': align_time,
                 'diarization': diarize_time,
                 'voice_matching': voice_match_time,
+                'agenda_detection': agenda_time,
                 'summarization': summary_time,
                 'clip_extraction': clip_time,
                 'total': total_time,
@@ -373,6 +405,8 @@ class TranscribeSummaryPipeline:
                 'speaker_summary': speaker_summary,
             },
             'summary': summary_text,
+            'agendas': enriched_agendas,
+            'detection_mode': detection_mode,
             'speaker_clips': speaker_clips,
             'clip_dir': clip_dir,
             'suggested_names': suggested_names,
