@@ -63,7 +63,7 @@
 | 11 | Encrypt/tokenize ข้อมูลส่วนบุคคลใน DB | 🔴 ไม่มี | สูง |
 | 12 | PDPA Consent UI & Management | ✅ เสร็จแล้ว | สูง |
 | 13 | User Activity Log & Audit Trail | ✅ เสร็จแล้ว | สูง |
-| 14 | Transcript/Summary รองรับ 3 ภาษา (ไทย/อังกฤษ/จีน) | 🔴 ไม่มี | กลาง |
+| 14 | Transcript/Summary รองรับ 3 ภาษา (ไทย/อังกฤษ/จีน) | ✅ เสร็จแล้ว (Phase 12) | กลาง |
 | 15 | Queue Monitoring (Admin) | ✅ เสร็จแล้ว | กลาง |
 | 16 | Server Resource Monitoring + Ollama Management | ✅ เสร็จแล้ว (Phase 10) | กลาง |
 | 17 | Scheduled Daily DB Backup | 🔴 ไม่มี | กลาง |
@@ -73,11 +73,28 @@
 | 21 | VA Pen Test / Security Hardening | 🔴 ไม่มี | สูง |
 | 22 | Performance Tuning | ✅ เสร็จแล้ว (Phase 16.2) | กลาง |
 
-**สรุป:** 20 features เสร็จแล้ว, 0 features กำลังดำเนินการ, 2 features ต้องทำใหม่
+**สรุป:** 21 features เสร็จแล้ว, 0 features กำลังดำเนินการ, 1 features ต้องทำใหม่
 
 ---
 
 ## Implementation Log
+
+### Phase 12 (Multilingual Support — Hidden Mixed Mode) — Completed 2026-06-11
+
+**Scope:** รองรับการถอดเสียงและสรุปไฟล์ที่มีการพูดหลายภาษาผสมกัน (ไทย/อังกฤษ/จีน) โดยไม่ต้องเปลี่ยนแปลง UI ฝั่ง Frontend — ระบบทำงานแบบ Hidden Mixed Mode อัตโนมัติ และบังคับ Output สรุปเป็นภาษาไทยเสมอ
+
+**Backend changes:**
+| File | Change |
+|------|--------|
+| `backend/app/services/pipeline.py` | ปรับ `initial_prompt` ให้ครอบคลุม 3 ภาษา (ไทย/EN/ZH) เพิ่ม alignment fallback chain: detected_lang → English → skip สำหรับภาษาที่ไม่มี wav2vec2 align model |
+| `backend/app/tasks/transcription.py` | บันทึก `detected_language` field ลงใน session document และ job result สำหรับ audit trail |
+| `backend/app/models/meeting_template.py` | เพิ่มกฎ "สรุปเป็นภาษาไทยเสมอ" ใน default system prompt พร้อมคำสั่งแปลภาษาจีนและใส่คำต้นฉบับในวงเล็บ |
+| `backend/app/services/summarizer.py` | บังคับ Thai output ใน **ทุก** summarization path: `_summarize_chunk`, `_consolidate_summaries`, `_summarize_single_agenda`, `_generate_executive_summary` เพิ่มตัวอย่างการแนะนำตัวภาษาจีนใน `detect_speaker_names` |
+| `backend/api.py` | เพิ่ม `_migrate_meeting_templates_multilingual()` ที่รันตอน startup เพื่อ force-update prompt templates ใน MongoDB เพื่อใช้ rule ใหม่ |
+
+**หมายเหตุ:** ไม่มีการแก้ไข Frontend — ระบบทำงานแบบ Transparent ต่อผู้ใช้ทุกคน
+
+---
 
 ### Phase 15 (LLM Settings & Rule-based Templates) — Completed 2026-06-09
 
@@ -695,10 +712,8 @@
 | 12 | Phase 10: Queue & Server Monitoring | กลาง | Ops visibility |
 | 13 | Phase 11: Scheduled DB Backup | เล็ก | Data safety |
 | 14 | Phase 14: Human Speaker Verification | กลาง | Accuracy improvement |
-| 15 | Phase 12: Multilingual Support | ใหญ่ | Market expansion |
-| 16 | Phase 13: Sub-agenda Auto-separation | ใหญ่ | Premium feature |
-| 17 | Phase 15: LLM Settings & Templates | กลาง | Customization |
-| 18 | Phase 16: Security & Performance | ใหญ่ | Production readiness |
+| ~~15~~ | ~~Phase 12: Multilingual Support~~ | ~~ใหญ่~~ | ✅ เสร็จแล้ว |
+| 15 | Phase 16: Security & Performance | ใหญ่ | Production readiness |
 
 ---
 
