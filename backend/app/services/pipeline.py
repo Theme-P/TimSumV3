@@ -56,7 +56,7 @@ class TranscribeSummaryPipeline:
                 "compression_ratio_threshold": 2.2,
                 "log_prob_threshold": -0.8,
                 "no_speech_threshold": 0.5,
-                "initial_prompt": "สวัสดีครับ This is a meeting transcription. ถอดเสียงการประชุมภาษาไทยและอังกฤษ",
+                "initial_prompt": "สวัสดีครับ This is a meeting transcription. 这是一个会议记录。 ถอดเสียงการประชุมภาษาไทย อังกฤษ และจีน",
                 "repetition_penalty": 1.1,
                 "length_penalty": 1.0,
             },
@@ -160,10 +160,11 @@ class TranscribeSummaryPipeline:
         logger.info("Aligning transcript (word-level timestamps)...")
         align_start = time.time()
         
-        # Use detected language for alignment (fallback to Thai)
+        # Use detected language for alignment (fallback chain: detected → en → skip)
         align_language = detected_language or "th"
         logger.info(f"Aligning with language: {align_language}")
         
+        alignment_success = False
         try:
             align_model, align_metadata = whisperx.load_align_model(
                 language_code=align_language,
@@ -177,15 +178,43 @@ class TranscribeSummaryPipeline:
                 self.config.DEVICE,
                 return_char_alignments=False,
             )
+            alignment_success = True
             align_time = time.time() - align_start
-            logger.info(f"Alignment completed in {align_time:.2f}s")
+            logger.info(f"Alignment completed in {align_time:.2f}s (lang={align_language})")
             
             # Clear alignment model
             del align_model
             clear_gpu_memory()
         except Exception as e:
+            # Fallback: try English alignment model (broader phoneme coverage)
+            if align_language != "en":
+                logger.warning(f"Alignment failed for '{align_language}', trying English fallback: {e}")
+                try:
+                    align_model, align_metadata = whisperx.load_align_model(
+                        language_code="en",
+                        device=self.config.DEVICE
+                    )
+                    result = whisperx.align(
+                        result["segments"],
+                        align_model,
+                        align_metadata,
+                        audio,
+                        self.config.DEVICE,
+                        return_char_alignments=False,
+                    )
+                    alignment_success = True
+                    align_time = time.time() - align_start
+                    logger.info(f"Alignment completed with English fallback in {align_time:.2f}s")
+                    
+                    del align_model
+                    clear_gpu_memory()
+                except Exception as e2:
+                    logger.warning(f"English fallback alignment also failed (using segment-level timestamps): {e2}")
+            else:
+                logger.warning(f"Alignment skipped (will use segment-level timestamps): {e}")
+        
+        if not alignment_success:
             align_time = 0
-            logger.warning(f"Alignment skipped (will use segment-level timestamps): {e}")
         
         # Step 5: Run speaker diarization
         _report("diarizing", 50)

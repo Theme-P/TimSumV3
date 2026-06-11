@@ -255,6 +255,7 @@ def process_audio(
             "suggested_names": result.get("suggested_names", {}),
             "agendas": result.get("agendas", []),
             "detection_mode": result.get("detection_mode", "single_topic"),
+            "detected_language": result.get("detected_language", "th"),
             "created_at": datetime.now(timezone.utc),
         }
         session_result = db.session.insert_one(session_doc)
@@ -277,6 +278,7 @@ def process_audio(
             "suggested_names": result.get("suggested_names", {}),
             "agendas": result.get("agendas", []),
             "detection_mode": result.get("detection_mode", "single_topic"),
+            "detected_language": result.get("detected_language", "th"),
         }
 
         _update_job(db, job_id, {

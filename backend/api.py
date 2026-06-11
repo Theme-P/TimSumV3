@@ -164,6 +164,35 @@ def _seed_meeting_templates():
 _seed_meeting_templates()
 
 
+def _migrate_meeting_templates_multilingual():
+    """One-time migration: update all meeting templates with multilingual-aware prompts.
+
+    Replaces the old Thai-summary rule with the stronger multilingual rule that
+    forces Thai output regardless of transcript language. Safe to run repeatedly
+    — only updates templates that still contain the old rule wording.
+    """
+    from app.models.meeting_template import get_default_meeting_templates
+    mongo = app.state.mongo_service
+    defaults = get_default_meeting_templates()
+    updated_count = 0
+    for template in defaults:
+        existing = mongo.get_meeting_template(template["meeting_type_id"])
+        if not existing:
+            continue
+        old_prompt = existing.get("system_prompt", "")
+        # Detect templates that still have the old wording (pre-multilingual)
+        if "สรุปเป็นภาษาไทยเป็นหลัก" in old_prompt or "สรุปเป็นภาษาไทยเสมอ" not in old_prompt:
+            mongo.update_meeting_template(
+                template["meeting_type_id"],
+                {"system_prompt": template["system_prompt"]},
+            )
+            updated_count += 1
+    if updated_count > 0:
+        print(f"✅ Migrated {updated_count} meeting template(s): added multilingual Thai-summary rule")
+
+_migrate_meeting_templates_multilingual()
+
+
 # ── Migrate legacy users: add status field if missing ──
 def _migrate_users_status():
     mongo = app.state.mongo_service
