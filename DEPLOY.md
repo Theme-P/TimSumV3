@@ -51,6 +51,10 @@ cp .env.example .env
 | `ALLOWED_ORIGINS` | CORS origins (ถ้า deploy ขึ้น server จริง ต้องเปลี่ยน) | ❗ **ต้องแก้ ถ้า deploy จริง** |
 | `GOOGLE_CLIENT_ID` | Google OAuth Client ID (Optional — ถ้าไม่ใช้ SSO ไม่ต้องใส่) | ✅ Optional |
 | `SMTP_SERVER` | SMTP server สำหรับส่งอีเมล (Optional) | ✅ Optional |
+| `SMTP_PORT` | SMTP port เช่น 25, 465, 587 | ✅ Optional |
+| `SENDER_EMAIL` | อีเมลผู้ส่ง ถ้าใช้ SMTP ต้องใส่คู่กับ `SMTP_SERVER` | ✅ Optional |
+| `SMTP_SECURE` | `false` = plain SMTP, `ssl`/`true` = SSL, `starttls` = STARTTLS | ✅ Optional |
+| `EMAIL_DEBUG` | เปิด log debug การส่งอีเมล (`true`/`false`) | ✅ Optional |
 
 #### 📌 วิธี Generate ค่าสำคัญ
 

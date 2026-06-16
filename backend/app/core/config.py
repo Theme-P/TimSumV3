@@ -38,6 +38,8 @@ class EmailConfig:
     EMAIL_USERNAME = os.environ.get("EMAIL_USERNAME", "")
     EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD", "")
     SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "")
+    SMTP_SECURE = os.environ.get("SMTP_SECURE", "false")
+    EMAIL_DEBUG = os.environ.get("EMAIL_DEBUG", "false").lower() == "true"
 
     @classmethod
     def is_configured(cls) -> bool:

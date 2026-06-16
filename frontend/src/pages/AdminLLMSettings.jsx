@@ -1,8 +1,15 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Link } from 'react-router-dom';
 
 const API_BASE = '/api';
+
+const DEFAULT_LLM_FORM = {
+    primary_model: 'gpt-4.1',
+    fallback_models: 'qwen2.5:72b-instruct-q4_K_M\nscb10x/typhoon2.1-gemma3-12b',
+    temperature: 0.3,
+    max_tokens: 4000,
+};
 
 function getUserInfo(token) {
     try {
@@ -19,25 +26,47 @@ function getUserInfo(token) {
     }
 }
 
+function normalizeNumber(value, fallback) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseFallbackModels(value) {
+    return value
+        .split('\n')
+        .map(item => item.trim())
+        .filter(Boolean);
+}
+
 function AdminLLMSettings() {
     const { token, logout } = useAuth();
     const userInfo = token ? getUserInfo(token) : { initials: '', username: '', email: '', role: 'user' };
+    const headers = useMemo(() => ({
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+    }), [token]);
+
+    const [activeSection, setActiveSection] = useState('models');
+
+    const [llmForm, setLlmForm] = useState(DEFAULT_LLM_FORM);
+    const [llmLoading, setLlmLoading] = useState(true);
+    const [llmSaving, setLlmSaving] = useState(false);
+    const [llmTesting, setLlmTesting] = useState(false);
+    const [llmTestResult, setLlmTestResult] = useState('');
+    const [llmTestPrompt, setLlmTestPrompt] = useState('ช่วยสรุปข้อความนี้ให้เป็น bullet points:\nวันนี้ทีมตกลงให้ปรับแผนส่งมอบเป็นวันศุกร์ และให้คุณสมชายรับผิดชอบประสานงานลูกค้า');
 
     const [templates, setTemplates] = useState([]);
     const [selectedTemplateId, setSelectedTemplateId] = useState(null);
-    const [formData, setFormData] = useState({ system_prompt: '', temperature: 0.4, max_tokens: 4000 });
-    const [loading, setLoading] = useState(true);
-    const [saving, setSaving] = useState(false);
-    const [testing, setTesting] = useState(false);
-    const [testResult, setTestResult] = useState('');
-    const [testUserPrompt, setTestUserPrompt] = useState('กรุณาสรุปให้หน่อย:\nนายก: วันนี้เรามาประชุมเรื่องงบประมาณประจำปี\nนายข: เห็นด้วยครับ ควรเพิ่มงบการตลาด\nนายก: โอเค สรุปตามนั้น');
-    
+    const [templateForm, setTemplateForm] = useState({ system_prompt: '', temperature: 0.4, max_tokens: 4000 });
+    const [templatesLoading, setTemplatesLoading] = useState(true);
+    const [templateSaving, setTemplateSaving] = useState(false);
+    const [templateTesting, setTemplateTesting] = useState(false);
+    const [templateTestResult, setTemplateTestResult] = useState('');
+    const [templateTestPrompt, setTemplateTestPrompt] = useState('กรุณาสรุปให้หน่อย:\nนายก: วันนี้เรามาประชุมเรื่องงบประมาณประจำปี\nนายข: เห็นด้วยครับ ควรเพิ่มงบการตลาด\nนายก: โอเค สรุปตามนั้น');
+
     const [showDropdown, setShowDropdown] = useState(false);
     const dropdownRef = useRef(null);
 
-    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
-
-    // Close dropdown on outside click
     useEffect(() => {
         const handleClickOutside = (e) => {
             if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
@@ -48,93 +77,179 @@ function AdminLLMSettings() {
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
 
+    const hydrateLlmForm = (config) => {
+        setLlmForm({
+            primary_model: config.primary_model || DEFAULT_LLM_FORM.primary_model,
+            fallback_models: (config.fallback_models || []).join('\n') || DEFAULT_LLM_FORM.fallback_models,
+            temperature: config.temperature ?? DEFAULT_LLM_FORM.temperature,
+            max_tokens: config.max_tokens ?? DEFAULT_LLM_FORM.max_tokens,
+        });
+    };
+
+    const fetchLlmConfig = useCallback(async () => {
+        setLlmLoading(true);
+        try {
+            const res = await fetch(`${API_BASE}/admin/llm-configs`, { headers });
+            if (!res.ok) throw new Error('โหลด LLM config ไม่สำเร็จ');
+            const data = await res.json();
+            const defaultConfig = data.find(item => item.name === 'default_fallback') || data[0];
+            if (defaultConfig) hydrateLlmForm(defaultConfig);
+        } catch (err) {
+            setLlmTestResult(`Error: ${err.message}`);
+        } finally {
+            setLlmLoading(false);
+        }
+    }, [headers]);
+
     const fetchTemplates = useCallback(async () => {
-        setLoading(true);
+        setTemplatesLoading(true);
         try {
             const res = await fetch(`${API_BASE}/admin/meeting-templates`, { headers });
-            if (res.ok) {
-                const data = await res.json();
-                setTemplates(data || []);
-                if (data.length > 0 && !selectedTemplateId) {
-                    setSelectedTemplateId(data[0].meeting_type_id);
-                    setFormData({
-                        system_prompt: data[0].system_prompt,
-                        temperature: data[0].temperature,
-                        max_tokens: data[0].max_tokens,
-                    });
-                }
+            if (!res.ok) throw new Error('โหลด template ไม่สำเร็จ');
+            const data = await res.json();
+            setTemplates(data || []);
+            if (data.length > 0) {
+                const selected = data.find(item => item.meeting_type_id === selectedTemplateId) || data[0];
+                setSelectedTemplateId(selected.meeting_type_id);
+                setTemplateForm({
+                    system_prompt: selected.system_prompt,
+                    temperature: selected.temperature,
+                    max_tokens: selected.max_tokens,
+                });
             }
-        } catch { /* ignore */ } finally {
-            setLoading(false);
+        } catch (err) {
+            setTemplateTestResult(`Error: ${err.message}`);
+        } finally {
+            setTemplatesLoading(false);
         }
-    }, [token, selectedTemplateId]);
+    }, [headers, selectedTemplateId]);
 
     useEffect(() => {
+        fetchLlmConfig();
         fetchTemplates();
-    }, [fetchTemplates]);
+    }, [fetchLlmConfig, fetchTemplates]);
 
     const handleSelectTemplate = (id) => {
         const tmpl = templates.find(t => t.meeting_type_id === id);
-        if (tmpl) {
-            setSelectedTemplateId(id);
-            setFormData({
-                system_prompt: tmpl.system_prompt,
-                temperature: tmpl.temperature,
-                max_tokens: tmpl.max_tokens,
+        if (!tmpl) return;
+        setSelectedTemplateId(id);
+        setTemplateForm({
+            system_prompt: tmpl.system_prompt,
+            temperature: tmpl.temperature,
+            max_tokens: tmpl.max_tokens,
+        });
+        setTemplateTestResult('');
+    };
+
+    const handleSaveLlmConfig = async () => {
+        const fallbackModels = parseFallbackModels(llmForm.fallback_models);
+        if (!llmForm.primary_model.trim()) return alert('กรุณาระบุ Primary model');
+        if (fallbackModels.length === 0) return alert('กรุณาระบุ Fallback model อย่างน้อย 1 รายการ');
+
+        setLlmSaving(true);
+        try {
+            const res = await fetch(`${API_BASE}/admin/llm-configs/default_fallback`, {
+                method: 'PUT',
+                headers,
+                body: JSON.stringify({
+                    primary_model: llmForm.primary_model.trim(),
+                    fallback_models: fallbackModels,
+                    temperature: normalizeNumber(llmForm.temperature, 0.3),
+                    max_tokens: normalizeNumber(llmForm.max_tokens, 4000),
+                }),
             });
-            setTestResult('');
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'บันทึก LLM config ไม่สำเร็จ');
+            hydrateLlmForm(data);
+            alert('บันทึก LLM config เรียบร้อยแล้ว');
+        } catch (err) {
+            alert(err.message);
+        } finally {
+            setLlmSaving(false);
         }
     };
 
-    const handleSave = async () => {
-        setSaving(true);
+    const handleTestLlmConfig = async () => {
+        if (!llmTestPrompt.trim()) return alert('กรุณากรอกข้อความทดสอบ');
+
+        setLlmTesting(true);
+        setLlmTestResult('');
+        try {
+            const res = await fetch(`${API_BASE}/admin/llm-configs/test`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    system_prompt: 'คุณคือผู้ช่วยสรุปข้อความอย่างกระชับและแม่นยำ ตอบเป็นภาษาไทย',
+                    user_prompt: llmTestPrompt,
+                    primary_model: llmForm.primary_model.trim(),
+                    fallback_models: parseFallbackModels(llmForm.fallback_models),
+                    temperature: normalizeNumber(llmForm.temperature, 0.3),
+                    max_tokens: normalizeNumber(llmForm.max_tokens, 4000),
+                }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'ทดสอบ LLM config ไม่สำเร็จ');
+            setLlmTestResult(data.result);
+        } catch (err) {
+            setLlmTestResult(`Error: ${err.message}`);
+        } finally {
+            setLlmTesting(false);
+        }
+    };
+
+    const handleSaveTemplate = async () => {
+        if (!selectedTemplateId) return;
+
+        setTemplateSaving(true);
         try {
             const res = await fetch(`${API_BASE}/admin/meeting-templates/${selectedTemplateId}`, {
                 method: 'PUT',
                 headers,
-                body: JSON.stringify(formData)
+                body: JSON.stringify({
+                    system_prompt: templateForm.system_prompt,
+                    temperature: normalizeNumber(templateForm.temperature, 0.4),
+                    max_tokens: normalizeNumber(templateForm.max_tokens, 4000),
+                }),
             });
-            if (!res.ok) {
-                const err = await res.json();
-                throw new Error(err.detail || 'บันทึกไม่สำเร็จ');
-            }
-            alert('บันทึกการตั้งค่าเรียบร้อยแล้ว');
-            await fetchTemplates(); // Refresh
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'บันทึก template ไม่สำเร็จ');
+            alert('บันทึก prompt template เรียบร้อยแล้ว');
+            await fetchTemplates();
         } catch (err) {
             alert(err.message);
         } finally {
-            setSaving(false);
+            setTemplateSaving(false);
         }
     };
 
-    const handleTest = async () => {
-        if (!testUserPrompt.trim()) return alert('กรุณากรอก User Prompt เพื่อทดสอบ');
-        setTesting(true);
-        setTestResult('');
+    const handleTestTemplate = async () => {
+        if (!templateTestPrompt.trim()) return alert('กรุณากรอก User Prompt เพื่อทดสอบ');
+
+        setTemplateTesting(true);
+        setTemplateTestResult('');
         try {
             const res = await fetch(`${API_BASE}/admin/meeting-templates/test`, {
                 method: 'POST',
                 headers,
                 body: JSON.stringify({
-                    system_prompt: formData.system_prompt,
-                    user_prompt: testUserPrompt,
-                    temperature: formData.temperature,
-                    max_tokens: formData.max_tokens
-                })
+                    system_prompt: templateForm.system_prompt,
+                    user_prompt: templateTestPrompt,
+                    temperature: normalizeNumber(templateForm.temperature, 0.4),
+                    max_tokens: normalizeNumber(templateForm.max_tokens, 4000),
+                }),
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || 'การทดสอบล้มเหลว');
-            setTestResult(data.result);
+            setTemplateTestResult(data.result);
         } catch (err) {
-            setTestResult(`Error: ${err.message}`);
+            setTemplateTestResult(`Error: ${err.message}`);
         } finally {
-            setTesting(false);
+            setTemplateTesting(false);
         }
     };
 
     return (
         <div className="app-wrapper">
-            {/* Navbar */}
             <nav className="app-nav">
                 <Link to="/" className="nav-logo" style={{ textDecoration: 'none' }}>
                     Tim<span>Sum</span>
@@ -167,129 +282,201 @@ function AdminLLMSettings() {
                 </div>
             </nav>
 
-            <div className="upload-content" style={{ maxWidth: 1200, display: 'flex', gap: '1.5rem', alignItems: 'flex-start' }}>
-                {/* Sidebar List */}
-                <div style={{ flex: '0 0 280px', background: 'var(--surface-elevated)', borderRadius: 12, padding: '1rem', border: '1px solid var(--border-color)' }}>
-                    <h3 style={{ marginBottom: '1rem', fontSize: '1.1rem', color: 'var(--text-primary)' }}>ประเภทการประชุม</h3>
-                    {loading ? (
-                        <p style={{ color: 'var(--text-muted)' }}>กำลังโหลด...</p>
-                    ) : (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                            {templates.map(t => (
-                                <button 
-                                    key={t.meeting_type_id}
-                                    onClick={() => handleSelectTemplate(t.meeting_type_id)}
-                                    style={{
-                                        textAlign: 'left', padding: '0.75rem 1rem', borderRadius: 8,
-                                        border: '1px solid',
-                                        borderColor: selectedTemplateId === t.meeting_type_id ? 'var(--primary-color)' : 'transparent',
-                                        background: selectedTemplateId === t.meeting_type_id ? 'rgba(37,99,235,0.05)' : 'transparent',
-                                        color: selectedTemplateId === t.meeting_type_id ? 'var(--primary-color)' : 'var(--text-secondary)',
-                                        cursor: 'pointer', fontFamily: 'var(--font-thai)', fontWeight: selectedTemplateId === t.meeting_type_id ? 600 : 400,
-                                        transition: 'all 0.15s'
-                                    }}
-                                >
-                                    {t.thai_name}
-                                </button>
-                            ))}
-                        </div>
-                    )}
-                </div>
-
-                {/* Editor Area */}
-                <div style={{ flex: 1, background: 'var(--surface-elevated)', borderRadius: 12, padding: '1.5rem', border: '1px solid var(--border-color)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-                        <h2 style={{ margin: 0 }}>ตั้งค่า Prompt พื้นฐาน</h2>
-                        <button 
-                            className="btn-primary" 
-                            onClick={handleSave} 
-                            disabled={saving || loading}
-                            style={{ padding: '0.5rem 1.5rem', borderRadius: 8, fontSize: '0.9rem' }}
+            <main className="llm-settings-page">
+                <aside className="llm-settings-sidebar">
+                    <div className="llm-section-switch">
+                        <button
+                            className={`llm-section-btn ${activeSection === 'models' ? 'active' : ''}`}
+                            onClick={() => setActiveSection('models')}
                         >
-                            {saving ? 'กำลังบันทึก...' : 'บันทึกการตั้งค่า'}
+                            Runtime Models
+                        </button>
+                        <button
+                            className={`llm-section-btn ${activeSection === 'templates' ? 'active' : ''}`}
+                            onClick={() => setActiveSection('templates')}
+                        >
+                            Prompt Templates
                         </button>
                     </div>
 
-                    <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
-                        <div style={{ flex: 1 }}>
-                            <label style={{ display: 'block', marginBottom: '0.4rem', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Temperature (0.0 - 1.0)</label>
-                            <input 
-                                type="number" step="0.1" min="0" max="1" 
-                                value={formData.temperature} 
-                                onChange={e => setFormData({ ...formData, temperature: parseFloat(e.target.value) })}
-                                style={{ width: '100%', padding: '0.6rem', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}
-                            />
+                    {activeSection === 'models' && (
+                        <div className="llm-sidebar-note">
+                            <span className="llm-note-label">Config</span>
+                            <strong>default_fallback</strong>
+                            <p>ใช้กับการสรุป, ทดสอบ prompt และ fallback ผ่าน Ollama</p>
                         </div>
-                        <div style={{ flex: 1 }}>
-                            <label style={{ display: 'block', marginBottom: '0.4rem', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Max Tokens</label>
-                            <input 
-                                type="number" step="100" min="100" max="16000" 
-                                value={formData.max_tokens} 
-                                onChange={e => setFormData({ ...formData, max_tokens: parseInt(e.target.value) })}
-                                style={{ width: '100%', padding: '0.6rem', borderRadius: 8, border: '1px solid var(--border-color)', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}
-                            />
+                    )}
+
+                    {activeSection === 'templates' && (
+                        <div className="llm-template-list">
+                            <h3>ประเภทการประชุม</h3>
+                            {templatesLoading ? (
+                                <p className="llm-muted">กำลังโหลด...</p>
+                            ) : (
+                                templates.map(t => (
+                                    <button
+                                        key={t.meeting_type_id}
+                                        className={`llm-template-item ${selectedTemplateId === t.meeting_type_id ? 'active' : ''}`}
+                                        onClick={() => handleSelectTemplate(t.meeting_type_id)}
+                                    >
+                                        {t.thai_name}
+                                    </button>
+                                ))
+                            )}
                         </div>
-                    </div>
+                    )}
+                </aside>
 
-                    <div style={{ marginBottom: '2rem' }}>
-                        <label style={{ display: 'block', marginBottom: '0.4rem', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>System Prompt</label>
-                        <textarea 
-                            value={formData.system_prompt} 
-                            onChange={e => setFormData({ ...formData, system_prompt: e.target.value })}
-                            rows={15}
-                            style={{ 
-                                width: '100%', padding: '0.75rem', borderRadius: 8, 
-                                border: '1px solid var(--border-color)', background: 'var(--bg-primary)', 
-                                color: 'var(--text-primary)', fontFamily: 'monospace', fontSize: '0.85rem',
-                                resize: 'vertical'
-                            }}
-                        />
-                        <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.4rem' }}>
-                            รองรับตัวแปร: <code>{`{num_speakers}`}</code> และ <code>{`{custom_prompt}`}</code> (ถ้าไม่มี <code>{`{custom_prompt}`}</code> ระบบจะต่อท้ายให้โดยอัตโนมัติ)
-                        </p>
-                    </div>
+                {activeSection === 'models' && (
+                    <section className="llm-settings-panel">
+                        <div className="llm-panel-header">
+                            <div>
+                                <h2>ตั้งค่า Runtime LLM</h2>
+                                <p>กำหนด primary model บน NTC Gateway และ fallback models สำหรับ Ollama</p>
+                            </div>
+                            <button className="btn-primary llm-save-btn" onClick={handleSaveLlmConfig} disabled={llmSaving || llmLoading}>
+                                {llmSaving ? 'กำลังบันทึก...' : 'บันทึก Config'}
+                            </button>
+                        </div>
 
-                    {/* Testing Section */}
-                    <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1.5rem' }}>
-                        <h3 style={{ marginBottom: '1rem', fontSize: '1rem' }}>ทดสอบ Prompt</h3>
-                        <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
-                            <div style={{ flex: 1 }}>
-                                <label style={{ display: 'block', marginBottom: '0.4rem', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>User Prompt (ข้อมูลจำลอง)</label>
-                                <textarea 
-                                    value={testUserPrompt} 
-                                    onChange={e => setTestUserPrompt(e.target.value)}
-                                    rows={8}
-                                    style={{ 
-                                        width: '100%', padding: '0.75rem', borderRadius: 8, 
-                                        border: '1px solid var(--border-color)', background: 'var(--bg-primary)', 
-                                        color: 'var(--text-primary)', fontFamily: 'monospace', fontSize: '0.85rem',
-                                        resize: 'vertical'
-                                    }}
+                        <div className="llm-form-grid">
+                            <label className="llm-field llm-field-wide">
+                                <span>Primary Model</span>
+                                <input
+                                    value={llmForm.primary_model}
+                                    onChange={e => setLlmForm({ ...llmForm, primary_model: e.target.value })}
+                                    disabled={llmLoading}
                                 />
-                                <button 
-                                    className="btn-outline" 
-                                    onClick={handleTest}
-                                    disabled={testing}
-                                    style={{ marginTop: '0.75rem', padding: '0.4rem 1.25rem', fontSize: '0.85rem', borderRadius: 6 }}
-                                >
-                                    {testing ? 'กำลังทดสอบ...' : 'ทดสอบ'}
+                            </label>
+
+                            <label className="llm-field">
+                                <span>Temperature</span>
+                                <input
+                                    type="number"
+                                    step="0.1"
+                                    min="0"
+                                    max="1"
+                                    value={llmForm.temperature}
+                                    onChange={e => setLlmForm({ ...llmForm, temperature: e.target.value })}
+                                    disabled={llmLoading}
+                                />
+                            </label>
+
+                            <label className="llm-field">
+                                <span>Max Tokens</span>
+                                <input
+                                    type="number"
+                                    step="100"
+                                    min="100"
+                                    max="16000"
+                                    value={llmForm.max_tokens}
+                                    onChange={e => setLlmForm({ ...llmForm, max_tokens: e.target.value })}
+                                    disabled={llmLoading}
+                                />
+                            </label>
+
+                            <label className="llm-field llm-field-wide">
+                                <span>Fallback Models</span>
+                                <textarea
+                                    rows={5}
+                                    value={llmForm.fallback_models}
+                                    onChange={e => setLlmForm({ ...llmForm, fallback_models: e.target.value })}
+                                    disabled={llmLoading}
+                                />
+                                <small>ใส่ 1 model ต่อ 1 บรรทัด ระบบจะลองตามลำดับเมื่อ primary model ล้มเหลว</small>
+                            </label>
+                        </div>
+
+                        <div className="llm-test-area">
+                            <div>
+                                <label className="llm-field">
+                                    <span>ข้อความทดสอบ</span>
+                                    <textarea
+                                        rows={8}
+                                        value={llmTestPrompt}
+                                        onChange={e => setLlmTestPrompt(e.target.value)}
+                                    />
+                                </label>
+                                <button className="btn-outline llm-test-btn" onClick={handleTestLlmConfig} disabled={llmTesting || llmLoading}>
+                                    {llmTesting ? 'กำลังทดสอบ...' : 'ทดสอบ Config'}
                                 </button>
                             </div>
-                            <div style={{ flex: 1 }}>
-                                <label style={{ display: 'block', marginBottom: '0.4rem', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>ผลลัพธ์จาก LLM</label>
-                                <div style={{ 
-                                    width: '100%', height: '200px', overflowY: 'auto',
-                                    padding: '0.75rem', borderRadius: 8, 
-                                    border: '1px solid var(--border-color)', background: 'var(--bg-secondary)', 
-                                    color: 'var(--text-primary)', fontSize: '0.85rem', whiteSpace: 'pre-wrap'
-                                }}>
-                                    {testResult || <span style={{ color: 'var(--text-muted)' }}>คลิกทดสอบเพื่อดูผลลัพธ์</span>}
-                                </div>
+                            <div className="llm-result-box">
+                                {llmTestResult || <span>ผลลัพธ์จะแสดงที่นี่</span>}
                             </div>
                         </div>
-                    </div>
-                </div>
-            </div>
+                    </section>
+                )}
+
+                {activeSection === 'templates' && (
+                    <section className="llm-settings-panel">
+                        <div className="llm-panel-header">
+                            <div>
+                                <h2>ตั้งค่า Prompt Template</h2>
+                                <p>แก้ system prompt และ parameter เฉพาะประเภทการประชุม</p>
+                            </div>
+                            <button className="btn-primary llm-save-btn" onClick={handleSaveTemplate} disabled={templateSaving || templatesLoading}>
+                                {templateSaving ? 'กำลังบันทึก...' : 'บันทึก Template'}
+                            </button>
+                        </div>
+
+                        <div className="llm-form-grid">
+                            <label className="llm-field">
+                                <span>Temperature</span>
+                                <input
+                                    type="number"
+                                    step="0.1"
+                                    min="0"
+                                    max="1"
+                                    value={templateForm.temperature}
+                                    onChange={e => setTemplateForm({ ...templateForm, temperature: e.target.value })}
+                                />
+                            </label>
+
+                            <label className="llm-field">
+                                <span>Max Tokens</span>
+                                <input
+                                    type="number"
+                                    step="100"
+                                    min="100"
+                                    max="16000"
+                                    value={templateForm.max_tokens}
+                                    onChange={e => setTemplateForm({ ...templateForm, max_tokens: e.target.value })}
+                                />
+                            </label>
+
+                            <label className="llm-field llm-field-wide">
+                                <span>System Prompt</span>
+                                <textarea
+                                    rows={16}
+                                    value={templateForm.system_prompt}
+                                    onChange={e => setTemplateForm({ ...templateForm, system_prompt: e.target.value })}
+                                />
+                                <small>รองรับตัวแปร {'{num_speakers}'} และ {'{custom_prompt}'}</small>
+                            </label>
+                        </div>
+
+                        <div className="llm-test-area">
+                            <div>
+                                <label className="llm-field">
+                                    <span>User Prompt ทดสอบ</span>
+                                    <textarea
+                                        rows={8}
+                                        value={templateTestPrompt}
+                                        onChange={e => setTemplateTestPrompt(e.target.value)}
+                                    />
+                                </label>
+                                <button className="btn-outline llm-test-btn" onClick={handleTestTemplate} disabled={templateTesting}>
+                                    {templateTesting ? 'กำลังทดสอบ...' : 'ทดสอบ Template'}
+                                </button>
+                            </div>
+                            <div className="llm-result-box">
+                                {templateTestResult || <span>ผลลัพธ์จะแสดงที่นี่</span>}
+                            </div>
+                        </div>
+                    </section>
+                )}
+            </main>
         </div>
     );
 }

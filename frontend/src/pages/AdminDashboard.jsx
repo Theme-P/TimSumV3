@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Link } from 'react-router-dom';
+import PackageManager from '../components/admin/PackageManager';
 
 const API_BASE = '/api';
 
@@ -39,6 +40,11 @@ function AdminDashboard() {
     const [showDropdown, setShowDropdown] = useState(false);
     const [packages, setPackages] = useState([]);
     const [assigningPkg, setAssigningPkg] = useState(null);
+    const [activeAdminView, setActiveAdminView] = useState('users');
+    const [packageRequests, setPackageRequests] = useState([]);
+    const [requestStatusFilter, setRequestStatusFilter] = useState('pending');
+    const [requestsLoading, setRequestsLoading] = useState(false);
+    const [requestActionLoading, setRequestActionLoading] = useState(null);
     const dropdownRef = useRef(null);
 
     const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
@@ -92,11 +98,26 @@ function AdminDashboard() {
         } catch { /* ignore */ }
     }, [token]);
 
+    const fetchPackageRequests = useCallback(async () => {
+        setRequestsLoading(true);
+        try {
+            const query = requestStatusFilter === 'all' ? '' : `?status=${requestStatusFilter}`;
+            const res = await fetch(`${API_BASE}/admin/package-requests${query}`, { headers });
+            if (res.ok) {
+                const data = await res.json();
+                setPackageRequests(data.requests || []);
+            }
+        } catch { /* ignore */ } finally {
+            setRequestsLoading(false);
+        }
+    }, [token, requestStatusFilter]);
+
     useEffect(() => {
         fetchUsers(activeTab);
         fetchStats();
         fetchPackages();
-    }, [activeTab]);
+        fetchPackageRequests();
+    }, [activeTab, requestStatusFilter]);
 
     const handleAssignPackage = async (userId, packageId) => {
         setAssigningPkg(userId);
@@ -111,6 +132,31 @@ function AdminDashboard() {
             alert(err.message);
         } finally {
             setAssigningPkg(null);
+        }
+    };
+
+    const handlePackageRequestAction = async (requestId, action) => {
+        const adminNote = action === 'reject'
+            ? window.prompt('เหตุผลที่ปฏิเสธ (ไม่บังคับ)', '') || ''
+            : '';
+        if (action === 'approve' && !window.confirm('ยืนยันอนุมัติและเปลี่ยนแพ็กเกจให้ผู้ใช้นี้?')) {
+            return;
+        }
+
+        setRequestActionLoading(requestId);
+        try {
+            const res = await fetch(`${API_BASE}/admin/package-requests/${requestId}/${action}`, {
+                method: 'PUT',
+                headers,
+                body: JSON.stringify({ admin_note: adminNote, reset_usage: true }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'ดำเนินการคำขอไม่สำเร็จ');
+            await Promise.all([fetchPackageRequests(), fetchUsers(activeTab), fetchPackages()]);
+        } catch (err) {
+            alert(err.message);
+        } finally {
+            setRequestActionLoading(null);
         }
     };
 
@@ -209,6 +255,32 @@ function AdminDashboard() {
                     <p>อนุมัติ ปฏิเสธ หรือระงับบัญชีผู้ใช้ที่ลงทะเบียนเข้าใช้งาน</p>
                 </div>
 
+                <div style={{
+                    display: 'flex', gap: '0.5rem', marginBottom: '1.25rem',
+                    borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem',
+                    overflowX: 'auto',
+                }}>
+                    {[
+                        { key: 'users', label: 'ผู้ใช้งาน' },
+                        { key: 'requests', label: `คำขอแพ็กเกจ (${packageRequests.filter(r => r.status === 'pending').length})` },
+                        { key: 'packages', label: 'จัดการแพ็กเกจ' },
+                    ].map(view => (
+                        <button key={view.key} onClick={() => setActiveAdminView(view.key)}
+                            style={{
+                                padding: '0.55rem 1rem', borderRadius: 8, border: 'none',
+                                fontSize: '0.88rem', fontWeight: 700, cursor: 'pointer',
+                                fontFamily: 'var(--font-thai)',
+                                background: activeAdminView === view.key ? 'var(--text-primary)' : 'transparent',
+                                color: activeAdminView === view.key ? 'var(--bg-primary)' : 'var(--text-secondary)',
+                                whiteSpace: 'nowrap',
+                            }}>
+                            {view.label}
+                        </button>
+                    ))}
+                </div>
+
+                {activeAdminView === 'users' && (
+                    <>
                 {/* Stats Cards */}
                 <div style={{
                     display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
@@ -419,6 +491,140 @@ function AdminDashboard() {
                                 </div>
                             );
                         })}
+                    </div>
+                )}
+                    </>
+                )}
+
+                {activeAdminView === 'requests' && (
+                    <div>
+                        <div style={{
+                            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                            marginBottom: '1rem', gap: '1rem', flexWrap: 'wrap',
+                        }}>
+                            <div>
+                                <h2 style={{ margin: 0, fontSize: '1.05rem' }}>คำขอเปลี่ยนแพ็กเกจ</h2>
+                                <p style={{ margin: '0.2rem 0 0', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                                    ตรวจสอบและอนุมัติการ upgrade/downgrade จากผู้ใช้
+                                </p>
+                            </div>
+                            <select
+                                value={requestStatusFilter}
+                                onChange={e => setRequestStatusFilter(e.target.value)}
+                                style={{
+                                    padding: '0.5rem 0.75rem', borderRadius: 8,
+                                    border: '1px solid var(--border-color)',
+                                    background: 'var(--surface-elevated)',
+                                    color: 'var(--text-primary)',
+                                    fontFamily: 'var(--font-thai)',
+                                }}
+                            >
+                                <option value="pending">รอพิจารณา</option>
+                                <option value="approved">อนุมัติแล้ว</option>
+                                <option value="rejected">ปฏิเสธแล้ว</option>
+                                <option value="cancelled">ยกเลิกแล้ว</option>
+                                <option value="all">ทั้งหมด</option>
+                            </select>
+                        </div>
+
+                        {requestsLoading ? (
+                            <div className="history-loading">
+                                <div className="history-spinner" />
+                                <span>กำลังโหลด...</span>
+                            </div>
+                        ) : packageRequests.length === 0 ? (
+                            <div className="history-empty">
+                                <h3>ไม่มีคำขอในสถานะนี้</h3>
+                            </div>
+                        ) : (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                {packageRequests.map(req => {
+                                    const fullName = req.user?.first_name || req.user?.last_name
+                                        ? `${req.user?.first_name || ''} ${req.user?.last_name || ''}`.trim()
+                                        : req.user?.username || req.user?.email || 'ผู้ใช้';
+                                    const isWorking = requestActionLoading === req._id;
+                                    return (
+                                        <div key={req._id} className="upload-card" style={{ marginBottom: 0 }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', alignItems: 'flex-start' }}>
+                                                <div style={{ minWidth: 0 }}>
+                                                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                                                        <strong>{fullName}</strong>
+                                                        <span style={{
+                                                            fontSize: '0.72rem', fontWeight: 700,
+                                                            padding: '0.12rem 0.5rem', borderRadius: 999,
+                                                            background: req.status === 'pending' ? 'rgba(198,138,25,0.12)' : 'var(--bg-tertiary)',
+                                                            color: req.status === 'pending' ? '#c68a19' : 'var(--text-secondary)',
+                                                        }}>
+                                                            {req.status}
+                                                        </span>
+                                                        <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                                            {req.request_type}
+                                                        </span>
+                                                    </div>
+                                                    <div style={{ fontSize: '0.84rem', color: 'var(--text-secondary)', marginTop: 6 }}>
+                                                        {req.current_package?.name || 'ไม่มีแพ็กเกจ'} → <strong>{req.requested_package?.name}</strong>
+                                                    </div>
+                                                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                                                        {req.user?.email}
+                                                        {req.user?.organization && <> · {req.user.organization}</>}
+                                                        {req.requested_at && <> · ส่งเมื่อ {new Date(req.requested_at).toLocaleString('th-TH')}</>}
+                                                    </div>
+                                                    {req.note && (
+                                                        <div style={{
+                                                            marginTop: '0.65rem', padding: '0.6rem 0.75rem',
+                                                            borderRadius: 8, background: 'var(--bg-tertiary)',
+                                                            fontSize: '0.84rem', color: 'var(--text-secondary)',
+                                                        }}>
+                                                            {req.note}
+                                                        </div>
+                                                    )}
+                                                    {req.admin_note && (
+                                                        <div style={{ marginTop: '0.4rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                                                            หมายเหตุแอดมิน: {req.admin_note}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                {req.status === 'pending' && (
+                                                    <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0 }}>
+                                                        <button
+                                                            onClick={() => handlePackageRequestAction(req._id, 'approve')}
+                                                            disabled={isWorking}
+                                                            style={{
+                                                                padding: '0.45rem 0.9rem', borderRadius: 8, border: 'none',
+                                                                background: '#2d8a4e', color: '#fff', fontWeight: 700,
+                                                                fontSize: '0.82rem', cursor: 'pointer', fontFamily: 'var(--font-thai)',
+                                                                opacity: isWorking ? 0.5 : 1,
+                                                            }}
+                                                        >
+                                                            อนุมัติ
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handlePackageRequestAction(req._id, 'reject')}
+                                                            disabled={isWorking}
+                                                            style={{
+                                                                padding: '0.45rem 0.9rem', borderRadius: 8,
+                                                                border: '1px solid var(--error)', background: 'transparent',
+                                                                color: 'var(--error)', fontWeight: 700, fontSize: '0.82rem',
+                                                                cursor: 'pointer', fontFamily: 'var(--font-thai)',
+                                                                opacity: isWorking ? 0.5 : 1,
+                                                            }}
+                                                        >
+                                                            ปฏิเสธ
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {activeAdminView === 'packages' && (
+                    <div className="upload-card" style={{ marginBottom: 0 }}>
+                        <PackageManager token={token} />
                     </div>
                 )}
             </div>

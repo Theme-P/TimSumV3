@@ -49,6 +49,7 @@ def update_meeting_template(
 @router.post("/test", response_model=dict)
 def test_meeting_template(
     payload: dict = Body(..., description="Payload containing system_prompt, user_prompt, temperature, etc."),
+    db: MongoService = Depends(get_mongo_service),
     admin_user: UserData = Depends(get_current_admin)
 ):
     """
@@ -72,7 +73,8 @@ def test_meeting_template(
             user_prompt=user_prompt,
             temperature=temperature,
             max_tokens=max_tokens,
-            timeout=60
+            timeout=60,
+            mongo_service=db,
         )
         return {"result": result}
     except Exception as e:

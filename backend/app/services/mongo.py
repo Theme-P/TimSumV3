@@ -20,7 +20,8 @@ class MongoService:
         required_collections = [
             "user", "quota", "session", "job",
             "package", "user_package", "password_reset", "voice_sample",
-            "activity_log", "consent_record", "llm_config", "meeting_template"
+            "activity_log", "consent_record", "llm_config", "meeting_template",
+            "package_request", "package_assignment_history",
         ]
         existing_collections = self.db.list_collection_names()
 
@@ -46,6 +47,10 @@ class MongoService:
         self.db.job.create_index([("user_id", 1), ("status", 1)], background=True)
         self.db.job.create_index("status", background=True)
         self.db.voice_sample.create_index("user_id", background=True)
+        self.db.llm_config.create_index("name", unique=True, background=True)
+        self.db.package_request.create_index([("status", 1), ("requested_at", -1)], background=True)
+        self.db.package_request.create_index([("user_id", 1), ("status", 1)], background=True)
+        self.db.package_assignment_history.create_index([("user_id", 1), ("changed_at", -1)], background=True)
 
     def _hash_password(self, password: str, salt: Optional[str] = None) -> tuple[str, str]:
         """Hash password with salt using PBKDF2."""
@@ -168,6 +173,8 @@ class MongoService:
         self.db.session.delete_many({"user_id": obj_id})
         self.db.voice_sample.delete_many({"user_id": obj_id})
         self.db.consent_record.delete_many({"user_id": str(user_id)})
+        self.db.package_request.delete_many({"user_id": obj_id})
+        self.db.package_assignment_history.delete_many({"user_id": obj_id})
 
     def delete_quota(self, user_id: ObjectId) -> None:
         """Delete a quota by user ID."""
@@ -334,6 +341,35 @@ class MongoService:
             self.cache.invalidate_packages()
         return str(result.inserted_id)
 
+    def create_package(self, pkg_data: dict) -> str:
+        """Create a new package. Returns package_id."""
+        pkg_data.setdefault("is_active", True)
+        pkg_data.setdefault("created_at", datetime.now(timezone.utc))
+        result = self.db.package.insert_one(pkg_data)
+        if self.cache:
+            self.cache.invalidate_packages()
+        return str(result.inserted_id)
+
+    def update_package_by_id(self, package_id: str, pkg_data: dict) -> bool:
+        """Update an existing package by ID."""
+        result = self.db.package.update_one(
+            {"_id": ObjectId(package_id)},
+            {"$set": pkg_data},
+        )
+        if result.matched_count and self.cache:
+            self.cache.invalidate_packages()
+        return result.matched_count > 0
+
+    def deactivate_package(self, package_id: str) -> bool:
+        """Soft-delete a package by marking it inactive."""
+        result = self.db.package.update_one(
+            {"_id": ObjectId(package_id)},
+            {"$set": {"is_active": False}},
+        )
+        if result.matched_count and self.cache:
+            self.cache.invalidate_packages()
+        return result.matched_count > 0
+
     def get_all_packages(self, active_only: bool = True) -> list:
         """Get all packages sorted by tier."""
         cache_key = f"pkg:all:{'active' if active_only else 'all'}"
@@ -349,6 +385,10 @@ class MongoService:
             doc["_id"] = str(doc["_id"])
             if doc.get("created_at"):
                 doc["created_at"] = doc["created_at"].isoformat()
+            doc["user_count"] = self.db.user_package.count_documents({
+                "package_id": ObjectId(doc["_id"]),
+                "status": "active",
+            })
             packages.append(doc)
 
         if self.cache:
@@ -373,32 +413,223 @@ class MongoService:
 
     # ── User Package ──
 
-    def assign_user_package(self, user_id: str, package_id: str, assigned_by: str = None) -> str:
-        """Assign a package to a user (replaces existing). Returns user_package id."""
+    def assign_user_package(
+        self,
+        user_id: str,
+        package_id: str,
+        assigned_by: str = None,
+        reset_usage: bool = True,
+        source: str = "admin",
+        request_id: str = None,
+    ) -> str:
+        """Assign a package to a user. Returns user_package id."""
         now = datetime.now(timezone.utc)
         current_month = now.strftime("%Y-%m")
+        user_obj_id = ObjectId(user_id)
+        package_obj_id = ObjectId(package_id)
+        current = self.db.user_package.find_one({"user_id": user_obj_id})
 
-        # Remove existing assignment
-        self.db.user_package.delete_many({"user_id": ObjectId(user_id)})
-
-        doc = {
-            "user_id": ObjectId(user_id),
-            "package_id": ObjectId(package_id),
-            "status": "active",
-            "started_at": now,
-            "expires_at": None,
-            "usage": {
+        if reset_usage or not current:
+            usage = {
                 "files_this_month": 0,
                 "ai_summaries_this_month": 0,
                 "transcription_minutes_this_month": 0,
-            },
-            "usage_reset_month": current_month,
+            }
+            usage_reset_month = current_month
+        else:
+            usage = current.get("usage", {
+                "files_this_month": 0,
+                "ai_summaries_this_month": 0,
+                "transcription_minutes_this_month": 0,
+            })
+            usage_reset_month = current.get("usage_reset_month", current_month)
+
+        doc = {
+            "user_id": user_obj_id,
+            "package_id": package_obj_id,
+            "status": "active",
+            "expires_at": None,
+            "usage": usage,
+            "usage_reset_month": usage_reset_month,
             "assigned_by": assigned_by,
+            "updated_at": now,
         }
-        result = self.db.user_package.insert_one(doc)
+
+        if current:
+            result = self.db.user_package.update_one(
+                {"_id": current["_id"]},
+                {"$set": doc},
+                upsert=False,
+            )
+            user_package_id = str(current["_id"])
+        else:
+            doc["started_at"] = now
+            result = self.db.user_package.insert_one(doc)
+            user_package_id = str(result.inserted_id)
+
+        self.db.package_assignment_history.insert_one({
+            "user_id": user_obj_id,
+            "from_package_id": current.get("package_id") if current else None,
+            "to_package_id": package_obj_id,
+            "changed_by": assigned_by,
+            "changed_at": now,
+            "source": source,
+            "request_id": ObjectId(request_id) if request_id else None,
+            "reset_usage": reset_usage,
+        })
+
         if self.cache:
             self.cache.invalidate_user_package(user_id)
-        return str(result.inserted_id)
+            self.cache.invalidate_packages()
+        return user_package_id
+
+    def create_package_request(self, user_id: str, requested_package_id: str, note: str = "") -> str:
+        """Create a user package change request."""
+        user_obj_id = ObjectId(user_id)
+        requested_obj_id = ObjectId(requested_package_id)
+
+        pending = self.db.package_request.find_one({
+            "user_id": user_obj_id,
+            "status": "pending",
+        })
+        if pending:
+            raise ValueError("คุณมีคำขอเปลี่ยนแพ็กเกจที่รอการพิจารณาอยู่แล้ว")
+
+        current = self.db.user_package.find_one({"user_id": user_obj_id})
+        current_package_id = current.get("package_id") if current else None
+        if current_package_id and current_package_id == requested_obj_id:
+            raise ValueError("คุณใช้งานแพ็กเกจนี้อยู่แล้ว")
+
+        current_pkg = self.db.package.find_one({"_id": current_package_id}) if current_package_id else None
+        requested_pkg = self.db.package.find_one({"_id": requested_obj_id})
+        if not requested_pkg or requested_pkg.get("is_active") is False:
+            raise ValueError("ไม่พบแพ็กเกจที่ต้องการ")
+
+        current_tier = current_pkg.get("tier", 0) if current_pkg else -1
+        requested_tier = requested_pkg.get("tier", 0)
+        if requested_tier > current_tier:
+            request_type = "upgrade"
+        elif requested_tier < current_tier:
+            request_type = "downgrade"
+        else:
+            request_type = "change"
+
+        doc = {
+            "_id": ObjectId(),
+            "user_id": user_obj_id,
+            "current_package_id": current_package_id,
+            "requested_package_id": requested_obj_id,
+            "request_type": request_type,
+            "status": "pending",
+            "note": (note or "").strip()[:1000],
+            "admin_note": "",
+            "requested_at": datetime.now(timezone.utc),
+            "reviewed_at": None,
+            "reviewed_by": None,
+        }
+        self.db.package_request.insert_one(doc)
+        return str(doc["_id"])
+
+    def _serialize_package_request(self, doc: dict) -> dict:
+        """Serialize package request with joined user/package information."""
+        user = self.db.user.find_one(
+            {"_id": doc["user_id"]},
+            {"password": 0, "salt": 0},
+        )
+        current_pkg = self.db.package.find_one({"_id": doc.get("current_package_id")}) if doc.get("current_package_id") else None
+        requested_pkg = self.db.package.find_one({"_id": doc.get("requested_package_id")}) if doc.get("requested_package_id") else None
+
+        result = {
+            "_id": str(doc["_id"]),
+            "user_id": str(doc["user_id"]),
+            "current_package_id": str(doc["current_package_id"]) if doc.get("current_package_id") else None,
+            "requested_package_id": str(doc["requested_package_id"]),
+            "request_type": doc.get("request_type", "change"),
+            "status": doc.get("status", "pending"),
+            "note": doc.get("note", ""),
+            "admin_note": doc.get("admin_note", ""),
+            "requested_at": doc["requested_at"].isoformat() if doc.get("requested_at") else None,
+            "reviewed_at": doc["reviewed_at"].isoformat() if doc.get("reviewed_at") else None,
+            "reviewed_by": doc.get("reviewed_by"),
+        }
+        if user:
+            result["user"] = {
+                "_id": str(user["_id"]),
+                "email": user.get("email"),
+                "username": user.get("username"),
+                "first_name": user.get("first_name"),
+                "last_name": user.get("last_name"),
+                "organization": user.get("organization"),
+            }
+        if current_pkg:
+            result["current_package"] = {
+                "_id": str(current_pkg["_id"]),
+                "name": current_pkg.get("name"),
+                "tier": current_pkg.get("tier", 0),
+                "price": current_pkg.get("price", 0),
+                "billing_cycle": current_pkg.get("billing_cycle"),
+            }
+        if requested_pkg:
+            result["requested_package"] = {
+                "_id": str(requested_pkg["_id"]),
+                "name": requested_pkg.get("name"),
+                "tier": requested_pkg.get("tier", 0),
+                "price": requested_pkg.get("price", 0),
+                "billing_cycle": requested_pkg.get("billing_cycle"),
+            }
+        return result
+
+    def get_package_requests(self, status: str = None, user_id: str = None, limit: int = 100) -> list:
+        """List package change requests."""
+        query = {}
+        if status:
+            query["status"] = status
+        if user_id:
+            query["user_id"] = ObjectId(user_id)
+
+        cursor = (
+            self.db.package_request.find(query)
+            .sort("requested_at", -1)
+            .limit(limit)
+        )
+        return [self._serialize_package_request(doc) for doc in cursor]
+
+    def get_package_request_by_id(self, request_id: str) -> Optional[dict]:
+        doc = self.db.package_request.find_one({"_id": ObjectId(request_id)})
+        if not doc:
+            return None
+        return self._serialize_package_request(doc)
+
+    def update_package_request_status(
+        self,
+        request_id: str,
+        status: str,
+        reviewed_by: str = None,
+        admin_note: str = "",
+    ) -> bool:
+        """Update package request review status."""
+        result = self.db.package_request.update_one(
+            {"_id": ObjectId(request_id)},
+            {"$set": {
+                "status": status,
+                "admin_note": (admin_note or "").strip()[:1000],
+                "reviewed_by": reviewed_by,
+                "reviewed_at": datetime.now(timezone.utc),
+            }},
+        )
+        return result.matched_count > 0
+
+    def cancel_package_request(self, request_id: str, user_id: str) -> bool:
+        """Cancel a pending request by owner."""
+        result = self.db.package_request.update_one(
+            {"_id": ObjectId(request_id), "user_id": ObjectId(user_id), "status": "pending"},
+            {"$set": {
+                "status": "cancelled",
+                "reviewed_at": datetime.now(timezone.utc),
+                "reviewed_by": str(user_id),
+            }},
+        )
+        return result.modified_count > 0
 
     def get_user_package(self, user_id: str) -> Optional[dict]:
         """Get user's current package assignment with package details."""
@@ -857,11 +1088,24 @@ class MongoService:
         return jobs
 
     # ── LLM Config ──
+    def get_all_llm_configs(self) -> list:
+        """Get all LLM configurations."""
+        cursor = self.db.llm_config.find().sort("name", 1)
+        configs = []
+        for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            if doc.get("updated_at"):
+                doc["updated_at"] = doc["updated_at"].isoformat()
+            configs.append(doc)
+        return configs
+
     def get_llm_config(self, name: str = "default_fallback") -> Optional[dict]:
         """Get LLM configuration."""
         doc = self.db.llm_config.find_one({"name": name})
         if doc:
             doc["_id"] = str(doc["_id"])
+            if doc.get("updated_at"):
+                doc["updated_at"] = doc["updated_at"].isoformat()
         return doc
 
     def upsert_llm_config(self, name: str, config_data: dict) -> str:

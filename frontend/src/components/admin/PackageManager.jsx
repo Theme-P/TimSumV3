@@ -13,6 +13,7 @@ const EMPTY_FORM = {
     limits: {
         transcription_minutes_per_month: 180, max_audio_minutes_per_file: 30,
         max_files_per_month: 6, ai_summary_per_month: 6, custom_prompt_enabled: false,
+        voice_enrollment_enabled: false,
     },
 };
 
@@ -64,6 +65,7 @@ function PackageManager({ token }) {
                 max_files_per_month: pkg.limits?.max_files_per_month ?? 6,
                 ai_summary_per_month: pkg.limits?.ai_summary_per_month ?? 6,
                 custom_prompt_enabled: pkg.limits?.custom_prompt_enabled ?? false,
+                voice_enrollment_enabled: pkg.limits?.voice_enrollment_enabled ?? false,
             },
         });
         setShowForm(true);
@@ -283,6 +285,11 @@ function PackageManager({ token }) {
                                     <input type="checkbox" checked={form.limits.custom_prompt_enabled}
                                         onChange={e => updateLimit('custom_prompt_enabled', e.target.checked)} />
                                     เปิดใช้ Custom Prompt
+                                </label>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: '0.4rem', fontSize: '0.85rem' }}>
+                                    <input type="checkbox" checked={form.limits.voice_enrollment_enabled}
+                                        onChange={e => updateLimit('voice_enrollment_enabled', e.target.checked)} />
+                                    เปิดใช้คลังเสียง / Voice Enrollment
                                 </label>
                             </div>
                         </div>

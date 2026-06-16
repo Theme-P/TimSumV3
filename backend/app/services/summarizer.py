@@ -29,21 +29,35 @@ HIERARCHICAL_THRESHOLD = 50000  # characters
 DEFAULT_FALLBACK_MODELS = ["qwen2.5:72b-instruct-q4_K_M", "scb10x/typhoon2.1-gemma3-12b"]
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
 
+def _normalize_llm_config(config: Optional[dict]) -> dict:
+    config = config or {}
+    fallback_models = config.get("fallback_models") or DEFAULT_FALLBACK_MODELS
+    if isinstance(fallback_models, str):
+        fallback_models = [item.strip() for item in fallback_models.split(",") if item.strip()]
+
+    return {
+        "primary_model": config.get("primary_model") or NTC_MODEL,
+        "fallback_models": fallback_models or DEFAULT_FALLBACK_MODELS,
+        "temperature": config.get("temperature", 0.3),
+        "max_tokens": config.get("max_tokens", 4000),
+    }
+
+
 def get_llm_config(mongo_service=None) -> dict:
     if mongo_service:
         try:
             config = mongo_service.get_llm_config("default_fallback")
             if config:
-                return config
+                return _normalize_llm_config(config)
         except Exception as e:
             logger.error(f"Error getting LLM config from DB: {e}")
             
-    return {
+    return _normalize_llm_config({
         "primary_model": NTC_MODEL,
         "fallback_models": DEFAULT_FALLBACK_MODELS,
         "temperature": 0.3,
         "max_tokens": 4000
-    }
+    })
 
 def _get_template_for_meeting(meeting_type_id: int, mongo_service=None) -> dict:
     """Fetch meeting template from DB or fallback to default."""
@@ -75,6 +89,7 @@ def _call_gpt41(
     temperature: float = 0.3,
     max_tokens: int = 4000,
     timeout: int = 120,
+    model_name: str = None,
 ) -> str:
     """Call GPT-4.1 via NTC API Gateway. Returns content string or empty."""
     if not NTC_API_KEY:
@@ -86,7 +101,7 @@ def _call_gpt41(
         "Content-Type": "application/json",
     }
     payload = {
-        "model": NTC_MODEL,
+        "model": model_name or NTC_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -137,17 +152,27 @@ def _call_ollama(
 def _call_llm_with_fallback(
     system_prompt: str,
     user_prompt: str,
-    temperature: float = 0.3,
-    max_tokens: int = 4000,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
     timeout: int = 120,
     mongo_service=None,
+    override_config: dict = None,
 ) -> str:
     """Try primary model (NTC GPT-4.1), fallback to Ollama models if it fails."""
-    config = get_llm_config(mongo_service)
+    config = _normalize_llm_config(override_config) if override_config else get_llm_config(mongo_service)
+    effective_temperature = temperature if temperature is not None else config["temperature"]
+    effective_max_tokens = max_tokens if max_tokens is not None else config["max_tokens"]
     
     # Try primary
     logger.info(f"Attempting summary with primary model: {config['primary_model']}")
-    result = _call_gpt41(system_prompt, user_prompt, temperature, max_tokens, timeout)
+    result = _call_gpt41(
+        system_prompt,
+        user_prompt,
+        effective_temperature,
+        effective_max_tokens,
+        timeout,
+        model_name=config["primary_model"],
+    )
     
     if result and result.strip():
         return result
@@ -155,7 +180,7 @@ def _call_llm_with_fallback(
     logger.warning("Primary model failed, trying fallback models...")
     for fallback_model in config["fallback_models"]:
         logger.info(f"Attempting summary with fallback model: {fallback_model}")
-        result = _call_ollama(fallback_model, system_prompt, user_prompt, temperature, timeout)
+        result = _call_ollama(fallback_model, system_prompt, user_prompt, effective_temperature, timeout)
         if result and result.strip():
             logger.info(f"Successfully generated summary with fallback model {fallback_model}")
             return result
@@ -399,7 +424,7 @@ def split_text_into_chunks(text: str, max_tokens: int = 30000) -> list[str]:
 # Chunk-level Summary
 # ============================================================
 
-def _summarize_chunk(chunk: str, chunk_idx: int, total_chunks: int) -> str:
+def _summarize_chunk(chunk: str, chunk_idx: int, total_chunks: int, mongo_service=None) -> str:
     """Summarize a single chunk of transcript."""
     system = "คุณคือผู้เชี่ยวชาญในการสรุปการประชุมอย่างละเอียด กรุณาสรุปเนื้อหาการประชุมโดยรักษาข้อมูลสำคัญทั้งหมดไว้ ไม่ให้สูญหาย สรุปเป็นภาษาไทยเสมอ ไม่ว่าเนื้อหาต้นฉบับจะเป็นภาษาอะไร คงคำศัพท์เฉพาะทางภาษาอังกฤษไว้ตามเดิม ถ้ามีภาษาจีนหรือภาษาอื่นให้แปลเป็นไทยและใส่คำต้นฉบับในวงเล็บ"
 
@@ -418,7 +443,14 @@ def _summarize_chunk(chunk: str, chunk_idx: int, total_chunks: int) -> str:
 
 หมายเหตุ: นี่คือเพียงส่วนหนึ่งของการประชุม กรุณาสรุปเฉพาะเนื้อหาในส่วนนี้อย่างครบถ้วน"""
 
-    return _call_llm_with_fallback(system, user, temperature=0.2, max_tokens=4000, timeout=120)
+    return _call_llm_with_fallback(
+        system,
+        user,
+        temperature=0.2,
+        max_tokens=4000,
+        timeout=120,
+        mongo_service=mongo_service,
+    )
 
 
 def _consolidate_summaries(
@@ -426,6 +458,7 @@ def _consolidate_summaries(
     classification: Dict,
     meeting_type_id: int,
     custom_prompt: str = "",
+    mongo_service=None,
 ) -> str:
     """Consolidate multiple chunk summaries into one final summary."""
     meeting_type = classification.get("meeting_type", "general_meeting")
@@ -551,7 +584,12 @@ def summarize_with_diarization(
     if len(transcript_with_speakers) > HIERARCHICAL_THRESHOLD:
         logger.info(f"Using HIERARCHICAL approach ({len(transcript_with_speakers)} chars)")
         return _summarize_hierarchical(
-            transcript_with_speakers, speaker_summary, meeting_type_id, classification, custom_prompt
+            transcript_with_speakers,
+            speaker_summary,
+            meeting_type_id,
+            classification,
+            custom_prompt,
+            mongo_service=mongo_service,
         )
 
     # Standard: single-call approach for shorter transcripts
@@ -623,6 +661,7 @@ def _summarize_hierarchical(
     meeting_type_id: int,
     classification: Dict,
     custom_prompt: str = "",
+    mongo_service=None,
 ) -> str:
     """Hierarchical multi-stage summary for long transcripts."""
     logger.info("Starting hierarchical summarization")
@@ -635,7 +674,7 @@ def _summarize_hierarchical(
     chunk_summaries = []
     for i, chunk in enumerate(chunks):
         logger.info(f"Summarizing chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
-        summary = _summarize_chunk(chunk, i, len(chunks))
+        summary = _summarize_chunk(chunk, i, len(chunks), mongo_service=mongo_service)
         if summary:
             chunk_summaries.append(summary)
             logger.info(f"Chunk {i+1} done ({len(summary)} chars)")
@@ -647,7 +686,13 @@ def _summarize_hierarchical(
 
     # Step 3: Consolidate into final summary
     logger.info(f"Consolidating {len(chunk_summaries)} chunk summaries")
-    final = _consolidate_summaries(chunk_summaries, classification, meeting_type_id, custom_prompt)
+    final = _consolidate_summaries(
+        chunk_summaries,
+        classification,
+        meeting_type_id,
+        custom_prompt,
+        mongo_service=mongo_service,
+    )
 
     logger.info(f"Hierarchical summary complete ({len(final)} chars)")
     return final
@@ -750,6 +795,8 @@ def _generate_executive_summary(
         agenda_summaries: List of {"agenda_number", "title", "summary", "decisions", "action_items"}
     """
     info = MEETING_TYPES.get(meeting_type_id, MEETING_TYPES.get(11, MEETING_TYPES[0]))
+    template_data = _get_template_for_meeting(meeting_type_id, mongo_service=mongo_service)
+    thai_name = template_data.get("thai_name") or info.get("thai", "ทั่วไป")
 
     # Build combined input
     combined_parts: list[str] = []
@@ -788,7 +835,7 @@ def _generate_executive_summary(
 
     result = _call_llm_with_fallback(
         system, user, 
-        temperature=0.2, 
+        temperature=template_data.get("temperature", 0.2),
         max_tokens=template_data.get("max_tokens", 4000), 
         timeout=120,
         mongo_service=mongo_service

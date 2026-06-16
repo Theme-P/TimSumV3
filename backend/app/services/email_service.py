@@ -32,12 +32,14 @@ class EmailService:
         username: str = "",
         password: str = "",
         sender_email: str = "",
+        smtp_secure: str | None = None,
     ) -> None:
         self.smtp_server = smtp_server or os.getenv("SMTP_SERVER", "")
         self.smtp_port = smtp_port or int(os.getenv("SMTP_PORT", "25"))
         self.username = username or os.getenv("EMAIL_USERNAME", "")
         self.password = password or os.getenv("EMAIL_PASSWORD", "")
         self.sender_email = sender_email or os.getenv("SENDER_EMAIL", "")
+        self.smtp_secure = (smtp_secure if smtp_secure is not None else os.getenv("SMTP_SECURE", "")).strip().lower()
         
         self.debug_mode = os.getenv("EMAIL_DEBUG", "false").lower() == "true"
         
@@ -45,7 +47,8 @@ class EmailService:
             logger.debug(f"[EMAIL DEBUG] SMTP Configuration: "
                         f"host={self.smtp_server}, port={self.smtp_port}, "
                         f"user={'YES' if self.username else 'NO_USER'}, "
-                        f"hasPassword={'YES' if self.password else 'NO'}")
+                        f"hasPassword={'YES' if self.password else 'NO'}, "
+                        f"secure={self.smtp_secure or 'auto'}")
         
         if self.is_configured:
             logger.info(f"[EMAIL INIT] EmailService configured with server={self.smtp_server}:{self.smtp_port}, sender={self.sender_email}")
@@ -62,60 +65,55 @@ class EmailService:
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
+        security_mode = self._resolve_security_mode()
 
-        if self.smtp_port == 25:
+        if security_mode == "plain":
             if self.debug_mode:
-                logger.debug("[EMAIL DEBUG] Using port 25 - Plain SMTP")
+                logger.debug("[EMAIL DEBUG] Using plain SMTP")
             
             server = smtplib.SMTP(self.smtp_server, self.smtp_port)
             if self.debug_mode:
                 server.set_debuglevel(1)
-                
-            if self.debug_mode:
-                try:
-                    response = server.noop()
-                    logger.debug(f"[EMAIL SMTP] NOOP response: {response}")
-                    try:
-                        vrfy_response = server.verify(self.sender_email)
-                        logger.debug(f"[EMAIL SMTP] VRFY sender response: {vrfy_response}")
-                    except Exception as vrfy_e:
-                        logger.debug(f"[EMAIL SMTP] VRFY sender not supported: {vrfy_e}")
-                except Exception as e:
-                    logger.warning(f"[EMAIL SMTP] NOOP failed: {e}")
-
             if self.username and self.password:
-                try:
-                    server.starttls(context=context)
-                    server.login(self.username, self.password)
-                except Exception as e:
-                    logger.warning(f"[EMAIL SMTP] STARTTLS/AUTH failed on port 25, continuing without: {e}")
-
+                server.login(self.username, self.password)
             return server
 
-        elif self.smtp_port == 465:
+        if security_mode == "ssl":
             if self.debug_mode:
-                logger.debug("[EMAIL DEBUG] Using port 465 - SMTP with SSL")
+                logger.debug("[EMAIL DEBUG] Using SMTP with SSL")
             server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port, context=context)
             if self.username and self.password:
                 server.login(self.username, self.password)
             return server
             
-        elif self.smtp_port == 587:
+        if security_mode == "starttls":
             if self.debug_mode:
-                logger.debug("[EMAIL DEBUG] Using port 587 - SMTP with STARTTLS")
+                logger.debug("[EMAIL DEBUG] Using SMTP with STARTTLS")
             server = smtplib.SMTP(self.smtp_server, self.smtp_port)
             server.starttls(context=context)
             if self.username and self.password:
                 server.login(self.username, self.password)
             return server
-            
-        else:
-            if self.debug_mode:
-                logger.debug(f"[EMAIL DEBUG] Using port {self.smtp_port} - Default configuration")
-            server = smtplib.SMTP(self.smtp_server, self.smtp_port)
-            if self.username and self.password:
-                server.login(self.username, self.password)
-            return server
+
+        logger.warning(f"[EMAIL SMTP] Unsupported SMTP_SECURE={self.smtp_secure!r}; falling back to plain SMTP")
+        server = smtplib.SMTP(self.smtp_server, self.smtp_port)
+        if self.username and self.password:
+            server.login(self.username, self.password)
+        return server
+
+    def _resolve_security_mode(self) -> str:
+        """Resolve SMTP security mode from SMTP_SECURE with port-based defaults."""
+        if self.smtp_secure in {"true", "ssl", "smtps", "465"}:
+            return "ssl"
+        if self.smtp_secure in {"starttls", "tls", "587"}:
+            return "starttls"
+        if self.smtp_secure in {"false", "none", "plain", "0", "no", "off"}:
+            return "plain"
+        if self.smtp_port == 465:
+            return "ssl"
+        if self.smtp_port == 587:
+            return "starttls"
+        return "plain"
 
     def send_email_with_attachments(
         self,

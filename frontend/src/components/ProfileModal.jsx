@@ -12,6 +12,15 @@ const ACTION_LABELS = {
     change_password: 'เปลี่ยนรหัสผ่าน', voice_sample_upload: 'อัปโหลด Voice Sample',
     voice_sample_delete: 'ลบ Voice Sample', consent_given: 'ยินยอมการใช้งาน',
     consent_withdrawn: 'ถอนการยินยอม',
+    package_request_create: 'ขอเปลี่ยนแพ็กเกจ',
+    package_request_cancel: 'ยกเลิกคำขอแพ็กเกจ',
+}
+
+const PACKAGE_REQUEST_STATUS = {
+    pending: { text: 'รอพิจารณา', color: '#c68a19', bg: 'rgba(198,138,25,0.12)' },
+    approved: { text: 'อนุมัติแล้ว', color: '#2d8a4e', bg: 'rgba(45,138,78,0.12)' },
+    rejected: { text: 'ถูกปฏิเสธ', color: '#c0392b', bg: 'rgba(192,57,43,0.12)' },
+    cancelled: { text: 'ยกเลิกแล้ว', color: '#7f8c8d', bg: 'rgba(127,140,141,0.12)' },
 }
 
 function UsageBar({ label, used, limit }) {
@@ -98,6 +107,12 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
     const [isLoading, setIsLoading] = useState(false)
     const [activityLogs, setActivityLogs] = useState([])
     const [consentData, setConsentData] = useState(null)
+    const [availablePackages, setAvailablePackages] = useState([])
+    const [packageRequests, setPackageRequests] = useState([])
+    const [selectedPackageId, setSelectedPackageId] = useState('')
+    const [packageRequestNote, setPackageRequestNote] = useState('')
+    const [packageRequestStatus, setPackageRequestStatus] = useState({ type: '', message: '' })
+    const [packageRequestLoading, setPackageRequestLoading] = useState(false)
 
     useEffect(() => {
         if (!isOpen) return
@@ -128,6 +143,23 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
                 }
             })
             .catch(() => {})
+
+        fetch(`${API_BASE}/packages`, {
+            headers: { 'Authorization': `Bearer ${token}` },
+        })
+            .then(r => r.json())
+            .then(data => setAvailablePackages(data.packages || []))
+            .catch(() => {})
+
+        const fetchPackageRequests = () => {
+            fetch(`${API_BASE}/user/package-requests`, {
+                headers: { 'Authorization': `Bearer ${token}` },
+            })
+                .then(r => r.json())
+                .then(data => setPackageRequests(data.requests || []))
+                .catch(() => {})
+        }
+        fetchPackageRequests()
             
         // Fetch profile
         fetch(`${API_BASE}/user/profile`, {
@@ -175,6 +207,8 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
     const usage = pkgData?.usage || {}
     const limits = pkg?.limits || {}
     const voiceEnrollmentEnabled = !!limits.voice_enrollment_enabled
+    const pendingPackageRequest = packageRequests.find(req => req.status === 'pending')
+    const requestablePackages = availablePackages.filter(item => item._id !== pkg?._id)
 
     const handleProfileUpdate = async (e) => {
         e.preventDefault()
@@ -233,6 +267,67 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
             setPasswordStatus({ type: 'error', message: err.message })
         } finally {
             setIsLoading(false)
+        }
+    }
+
+    const refreshPackageRequests = async () => {
+        const res = await fetch(`${API_BASE}/user/package-requests`, {
+            headers: { 'Authorization': `Bearer ${token}` },
+        })
+        const data = await res.json()
+        if (data.success) setPackageRequests(data.requests || [])
+    }
+
+    const handlePackageRequestSubmit = async (e) => {
+        e.preventDefault()
+        if (!selectedPackageId) {
+            setPackageRequestStatus({ type: 'error', message: 'กรุณาเลือกแพ็กเกจที่ต้องการ' })
+            return
+        }
+        setPackageRequestLoading(true)
+        setPackageRequestStatus({ type: '', message: '' })
+        try {
+            const res = await fetch(`${API_BASE}/user/package-requests`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    requested_package_id: selectedPackageId,
+                    note: packageRequestNote,
+                })
+            })
+            const data = await res.json()
+            if (!res.ok) throw new Error(data.detail || 'ส่งคำขอไม่สำเร็จ')
+            setPackageRequestStatus({ type: 'success', message: data.message || 'ส่งคำขอเรียบร้อยแล้ว' })
+            setSelectedPackageId('')
+            setPackageRequestNote('')
+            await refreshPackageRequests()
+        } catch (err) {
+            setPackageRequestStatus({ type: 'error', message: err.message })
+        } finally {
+            setPackageRequestLoading(false)
+        }
+    }
+
+    const handleCancelPackageRequest = async (requestId) => {
+        if (!window.confirm('ยืนยันยกเลิกคำขอนี้?')) return
+        setPackageRequestLoading(true)
+        setPackageRequestStatus({ type: '', message: '' })
+        try {
+            const res = await fetch(`${API_BASE}/user/package-requests/${requestId}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` },
+            })
+            const data = await res.json()
+            if (!res.ok) throw new Error(data.detail || 'ยกเลิกคำขอไม่สำเร็จ')
+            setPackageRequestStatus({ type: 'success', message: data.message || 'ยกเลิกคำขอเรียบร้อย' })
+            await refreshPackageRequests()
+        } catch (err) {
+            setPackageRequestStatus({ type: 'error', message: err.message })
+        } finally {
+            setPackageRequestLoading(false)
         }
     }
 
@@ -483,6 +578,183 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
                                             used={usage.transcription_minutes_this_month || 0}
                                             limit={limits.transcription_minutes_per_month || 0}
                                         />
+                                    </div>
+
+                                    <div style={{
+                                        marginTop: '1.5rem',
+                                        paddingTop: '1rem',
+                                        borderTop: '1px solid var(--border-color)',
+                                    }}>
+                                        <h4 style={{ fontSize: '14px', margin: '0 0 10px 0', color: 'var(--text-primary)' }}>
+                                            ขอเปลี่ยนแพ็กเกจ
+                                        </h4>
+
+                                        {packageRequestStatus.message && (
+                                            <div style={{
+                                                padding: '10px',
+                                                marginBottom: '12px',
+                                                borderRadius: '6px',
+                                                backgroundColor: packageRequestStatus.type === 'success' ? 'rgba(52, 168, 83, 0.1)' : 'rgba(234, 67, 53, 0.1)',
+                                                color: packageRequestStatus.type === 'success' ? '#34A853' : '#EA4335',
+                                                border: `1px solid ${packageRequestStatus.type === 'success' ? 'rgba(52, 168, 83, 0.2)' : 'rgba(234, 67, 53, 0.2)'}`,
+                                                fontSize: '0.86rem',
+                                            }}>
+                                                {packageRequestStatus.message}
+                                            </div>
+                                        )}
+
+                                        {pendingPackageRequest ? (
+                                            <div style={{
+                                                padding: '0.9rem 1rem',
+                                                borderRadius: '10px',
+                                                background: 'rgba(198,138,25,0.08)',
+                                                border: '1px solid rgba(198,138,25,0.22)',
+                                            }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'flex-start' }}>
+                                                    <div>
+                                                        <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                                                            รอพิจารณา: {pendingPackageRequest.requested_package?.name}
+                                                        </div>
+                                                        <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginTop: 4 }}>
+                                                            ส่งเมื่อ {pendingPackageRequest.requested_at ? parseUtcDate(pendingPackageRequest.requested_at).toLocaleString() : '—'}
+                                                        </div>
+                                                        {pendingPackageRequest.note && (
+                                                            <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                                                                หมายเหตุ: {pendingPackageRequest.note}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleCancelPackageRequest(pendingPackageRequest._id)}
+                                                        disabled={packageRequestLoading}
+                                                        style={{
+                                                            padding: '0.4rem 0.75rem',
+                                                            borderRadius: 8,
+                                                            border: '1px solid var(--text-muted)',
+                                                            background: 'transparent',
+                                                            color: 'var(--text-secondary)',
+                                                            cursor: packageRequestLoading ? 'not-allowed' : 'pointer',
+                                                            fontFamily: 'var(--font-thai)',
+                                                            fontWeight: 600,
+                                                            flexShrink: 0,
+                                                        }}
+                                                    >
+                                                        ยกเลิก
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <form onSubmit={handlePackageRequestSubmit}>
+                                                <div style={{ marginBottom: '0.75rem' }}>
+                                                    <label style={{ display: 'block', fontSize: '0.84rem', marginBottom: 5, color: 'var(--text-secondary)' }}>
+                                                        เลือกแพ็กเกจที่ต้องการ
+                                                    </label>
+                                                    <select
+                                                        value={selectedPackageId}
+                                                        onChange={e => setSelectedPackageId(e.target.value)}
+                                                        style={{
+                                                            width: '100%',
+                                                            padding: '10px',
+                                                            borderRadius: '6px',
+                                                            border: '1px solid var(--border-color)',
+                                                            backgroundColor: 'var(--bg-secondary)',
+                                                            color: 'var(--text-primary)',
+                                                            fontFamily: 'var(--font-thai)',
+                                                        }}
+                                                    >
+                                                        <option value="">เลือกแพ็กเกจ</option>
+                                                        {requestablePackages.map(item => (
+                                                            <option key={item._id} value={item._id}>
+                                                                {item.name} · {item.price?.toLocaleString()} บาท/{item.billing_cycle === 'yearly' ? 'ปี' : 'เดือน'}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                </div>
+                                                <div style={{ marginBottom: '0.75rem' }}>
+                                                    <label style={{ display: 'block', fontSize: '0.84rem', marginBottom: 5, color: 'var(--text-secondary)' }}>
+                                                        หมายเหตุถึงผู้ดูแลระบบ
+                                                    </label>
+                                                    <textarea
+                                                        rows={3}
+                                                        value={packageRequestNote}
+                                                        onChange={e => setPackageRequestNote(e.target.value)}
+                                                        placeholder="เช่น ต้องการเพิ่มจำนวนไฟล์ต่อเดือน หรือใช้งานคลังเสียง"
+                                                        style={{
+                                                            width: '100%',
+                                                            padding: '10px',
+                                                            borderRadius: '6px',
+                                                            border: '1px solid var(--border-color)',
+                                                            backgroundColor: 'var(--bg-secondary)',
+                                                            color: 'var(--text-primary)',
+                                                            fontFamily: 'var(--font-thai)',
+                                                            resize: 'vertical',
+                                                        }}
+                                                    />
+                                                </div>
+                                                <div style={{ textAlign: 'right' }}>
+                                                    <button
+                                                        type="submit"
+                                                        disabled={packageRequestLoading || !selectedPackageId}
+                                                        style={{
+                                                            padding: '0.55rem 1rem',
+                                                            borderRadius: 8,
+                                                            border: 'none',
+                                                            background: 'var(--accent-primary)',
+                                                            color: '#fff',
+                                                            fontWeight: 700,
+                                                            cursor: packageRequestLoading || !selectedPackageId ? 'not-allowed' : 'pointer',
+                                                            opacity: packageRequestLoading || !selectedPackageId ? 0.55 : 1,
+                                                            fontFamily: 'var(--font-thai)',
+                                                        }}
+                                                    >
+                                                        {packageRequestLoading ? 'กำลังส่ง...' : 'ส่งคำขอ'}
+                                                    </button>
+                                                </div>
+                                            </form>
+                                        )}
+
+                                        {packageRequests.length > 0 && (
+                                            <div style={{ marginTop: '1rem' }}>
+                                                <h4 style={{ fontSize: '14px', margin: '0 0 8px 0', color: 'var(--text-primary)' }}>
+                                                    ประวัติคำขอล่าสุด
+                                                </h4>
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                                    {packageRequests.slice(0, 3).map(req => {
+                                                        const status = PACKAGE_REQUEST_STATUS[req.status] || PACKAGE_REQUEST_STATUS.pending
+                                                        return (
+                                                            <div key={req._id} style={{
+                                                                padding: '0.65rem 0.75rem',
+                                                                borderRadius: 8,
+                                                                background: 'var(--bg-secondary)',
+                                                                fontSize: '0.82rem',
+                                                            }}>
+                                                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem' }}>
+                                                                    <span style={{ fontWeight: 600 }}>
+                                                                        {req.requested_package?.name || 'แพ็กเกจ'}
+                                                                    </span>
+                                                                    <span style={{
+                                                                        padding: '0.1rem 0.45rem',
+                                                                        borderRadius: 999,
+                                                                        background: status.bg,
+                                                                        color: status.color,
+                                                                        fontWeight: 700,
+                                                                        flexShrink: 0,
+                                                                    }}>
+                                                                        {status.text}
+                                                                    </span>
+                                                                </div>
+                                                                {req.admin_note && (
+                                                                    <div style={{ marginTop: 4, color: 'var(--text-muted)' }}>
+                                                                        หมายเหตุแอดมิน: {req.admin_note}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        )
+                                                    })}
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 </>
                             ) : (

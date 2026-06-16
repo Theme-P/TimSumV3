@@ -42,6 +42,7 @@ from app.routers.consent import router as consent_router
 from app.routers.queue import router as queue_router
 from app.routers.system_admin import router as system_admin_router
 from app.routers.meeting_template import router as meeting_template_router
+from app.routers.llm_config import router as llm_config_router
 from app.core.auth import get_current_user
 from app.models.user import UserData
 
@@ -101,6 +102,7 @@ app.include_router(consent_router)
 app.include_router(queue_router)
 app.include_router(system_admin_router, prefix="/api/admin/system", tags=["System Admin"])
 app.include_router(meeting_template_router, prefix="/api/admin/meeting-templates", tags=["Admin Meeting Templates"])
+app.include_router(llm_config_router, prefix="/api/admin/llm-configs", tags=["Admin LLM Config"])
 
 # ── Auto-create superadmin & admin users on startup ──
 def _ensure_default_users():
@@ -162,6 +164,20 @@ def _seed_meeting_templates():
             mongo.update_meeting_template(template["meeting_type_id"], template)
 
 _seed_meeting_templates()
+
+
+def _seed_llm_config():
+    """Seed default LLM runtime config if missing."""
+    from app.models.llm_config import get_default_llm_config
+
+    mongo = app.state.mongo_service
+    default_config = get_default_llm_config()
+    if not mongo.get_llm_config(default_config["name"]):
+        mongo.upsert_llm_config(default_config["name"], default_config)
+        print("✅ Seeded default LLM config")
+
+
+_seed_llm_config()
 
 
 def _migrate_meeting_templates_multilingual():

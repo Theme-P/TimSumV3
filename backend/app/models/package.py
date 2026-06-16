@@ -116,7 +116,7 @@ class Package(BaseModel):
     description: str = ""
     price: float = 0
     billing_cycle: str = "monthly"  # monthly, yearly, none
-    limits: PackageLimits = PackageLimits()
+    limits: PackageLimits = Field(default_factory=PackageLimits)
     tier: int = 0  # higher = better; used for badge display
     is_active: bool = True
     created_at: Optional[datetime] = None
@@ -141,9 +141,41 @@ class UserPackage(BaseModel):
     status: str = "active"  # active, expired
     started_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
-    usage: UserPackageUsage = UserPackageUsage()
+    usage: UserPackageUsage = Field(default_factory=UserPackageUsage)
     usage_reset_month: Optional[str] = None  # "2026-05" format, tracks last reset
     assigned_by: Optional[str] = None
+
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        populate_by_name=True,
+        json_encoders={ObjectId: str},
+    )
+
+
+PACKAGE_REQUEST_PENDING = "pending"
+PACKAGE_REQUEST_APPROVED = "approved"
+PACKAGE_REQUEST_REJECTED = "rejected"
+PACKAGE_REQUEST_CANCELLED = "cancelled"
+VALID_PACKAGE_REQUEST_STATUSES = [
+    PACKAGE_REQUEST_PENDING,
+    PACKAGE_REQUEST_APPROVED,
+    PACKAGE_REQUEST_REJECTED,
+    PACKAGE_REQUEST_CANCELLED,
+]
+
+
+class PackageChangeRequest(BaseModel):
+    id: ObjectId = Field(alias="_id", default_factory=ObjectId)
+    user_id: ObjectId
+    current_package_id: Optional[ObjectId] = None
+    requested_package_id: ObjectId
+    request_type: str = "change"  # upgrade, downgrade, change
+    status: str = PACKAGE_REQUEST_PENDING
+    note: str = ""
+    admin_note: str = ""
+    requested_at: datetime = Field(default_factory=datetime.utcnow)
+    reviewed_at: Optional[datetime] = None
+    reviewed_by: Optional[str] = None
 
     model_config = ConfigDict(
         arbitrary_types_allowed=True,

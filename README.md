@@ -168,11 +168,13 @@ OPENAI_BASE_URL=https://api.ntc.ai/v1
 HF_TOKEN=your_hf_token
 
 # Email (SMTP)
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_USER=your@email.com
-SMTP_PASS=your_smtp_password
-SMTP_FROM=noreply@example.com
+SMTP_SERVER=180.180.247.174
+SMTP_PORT=25
+EMAIL_USERNAME=
+EMAIL_PASSWORD=
+SENDER_EMAIL=timsum@ntplc.co.th
+SMTP_SECURE=false
+EMAIL_DEBUG=false
 ```
 
 ---
