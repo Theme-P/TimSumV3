@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Link } from 'react-router-dom';
 import ServerResources from '../components/admin/ServerResources';
@@ -37,6 +37,7 @@ function AdminMonitoring() {
     const [queueJobs, setQueueJobs] = useState([]);
     const [queueLoading, setQueueLoading] = useState(false);
     const [cancellingJob, setCancellingJob] = useState(null);
+    const [notice, setNotice] = useState(null);
 
     const ACTION_LABELS = {
         login: 'เข้าสู่ระบบ', logout: 'ออกจากระบบ', login_failed: 'เข้าสู่ระบบล้มเหลว',
@@ -50,7 +51,10 @@ function AdminMonitoring() {
         consent_given: 'ยินยอม PDPA', consent_withdrawn: 'ถอนการยินยอม',
     };
 
-    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+    const headers = useMemo(() => ({
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+    }), [token]);
 
     // Close dropdown on outside click
     useEffect(() => {
@@ -63,18 +67,27 @@ function AdminMonitoring() {
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
 
+    useEffect(() => {
+        if (!notice) return;
+        const timer = setTimeout(() => setNotice(null), 4500);
+        return () => clearTimeout(timer);
+    }, [notice]);
+
     const fetchActivityLogs = useCallback(async () => {
         setActivityLoading(true);
         try {
             const res = await fetch(`${API_BASE}/admin/activity-logs?limit=100`, { headers });
-            if (res.ok) {
-                const data = await res.json();
-                setActivityLogs(data.logs || []);
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'โหลด Activity Log ไม่สำเร็จ');
             }
-        } catch { /* ignore */ } finally {
+            setActivityLogs(data.logs || []);
+        } catch (err) {
+            setNotice({ type: 'error', text: err.message });
+        } finally {
             setActivityLoading(false);
         }
-    }, [token]);
+    }, [headers]);
 
     const fetchQueueData = useCallback(async () => {
         setQueueLoading(true);
@@ -83,18 +96,22 @@ function AdminMonitoring() {
                 fetch(`${API_BASE}/admin/queue/stats`, { headers }),
                 fetch(`${API_BASE}/admin/queue/tasks?limit=50`, { headers }),
             ]);
-            if (statsRes.ok) {
-                const data = await statsRes.json();
-                setQueueStats(data.stats || null);
+            const statsData = await statsRes.json();
+            const tasksData = await tasksRes.json();
+            if (!statsRes.ok) {
+                throw new Error(statsData.detail || 'โหลดสถานะคิวไม่สำเร็จ');
             }
-            if (tasksRes.ok) {
-                const data = await tasksRes.json();
-                setQueueJobs(data.jobs || []);
+            if (!tasksRes.ok) {
+                throw new Error(tasksData.detail || 'โหลดรายการงานไม่สำเร็จ');
             }
-        } catch { /* ignore */ } finally {
+            setQueueStats(statsData.stats || null);
+            setQueueJobs(tasksData.jobs || []);
+        } catch (err) {
+            setNotice({ type: 'error', text: err.message });
+        } finally {
             setQueueLoading(false);
         }
-    }, [token]);
+    }, [headers]);
 
     const handleCancelJob = async (jobId) => {
         if (!window.confirm('ยืนยันการยกเลิกงานนี้?')) return;
@@ -105,9 +122,10 @@ function AdminMonitoring() {
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || 'ยกเลิกไม่สำเร็จ');
+            setNotice({ type: 'success', text: 'ยกเลิกงานเรียบร้อย' });
             fetchQueueData();
         } catch (err) {
-            alert(err.message);
+            setNotice({ type: 'error', text: err.message });
         } finally {
             setCancellingJob(null);
         }
@@ -120,7 +138,7 @@ function AdminMonitoring() {
             const interval = setInterval(fetchQueueData, 30000);
             return () => clearInterval(interval);
         }
-    }, [activeTab]);
+    }, [activeTab, fetchActivityLogs, fetchQueueData]);
 
     const tabs = [
         { key: 'queue', label: 'Queue Monitor' },
@@ -200,6 +218,12 @@ function AdminMonitoring() {
                 </div>
 
                 {/* Tab Content */}
+                {notice && (
+                    <div className={`admin-notice admin-notice-${notice.type}`}>
+                        {notice.text}
+                    </div>
+                )}
+
                 {activeTab === 'resources' ? (
                     <ServerResources />
                 ) : activeTab === 'queue' ? (

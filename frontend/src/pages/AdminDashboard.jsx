@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Link } from 'react-router-dom';
 import PackageManager from '../components/admin/PackageManager';
@@ -45,9 +45,13 @@ function AdminDashboard() {
     const [requestStatusFilter, setRequestStatusFilter] = useState('pending');
     const [requestsLoading, setRequestsLoading] = useState(false);
     const [requestActionLoading, setRequestActionLoading] = useState(null);
+    const [notice, setNotice] = useState(null);
     const dropdownRef = useRef(null);
 
-    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+    const headers = useMemo(() => ({
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+    }), [token]);
 
     // Close dropdown on outside click
     useEffect(() => {
@@ -59,6 +63,12 @@ function AdminDashboard() {
         document.addEventListener('mousedown', handleClickOutside);
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
+
+    useEffect(() => {
+        if (!notice) return;
+        const timer = setTimeout(() => setNotice(null), 4500);
+        return () => clearTimeout(timer);
+    }, [notice]);
 
     const fetchUsers = useCallback(async (status) => {
         setLoading(true);
@@ -76,48 +86,63 @@ function AdminDashboard() {
         } finally {
             setLoading(false);
         }
-    }, [token]);
+    }, [headers]);
 
     const fetchStats = useCallback(async () => {
         try {
             const res = await fetch(`${API_BASE}/admin/users/stats`, { headers });
-            if (res.ok) {
-                const data = await res.json();
-                setStats(data.counts || {});
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                throw new Error(data.detail || 'โหลดสถิติผู้ใช้ไม่สำเร็จ');
             }
-        } catch { /* ignore */ }
-    }, [token]);
+            setStats(data.counts || {});
+        } catch (err) {
+            setNotice({ type: 'error', text: err.message });
+        }
+    }, [headers]);
 
     const fetchPackages = useCallback(async () => {
         try {
             const res = await fetch(`${API_BASE}/admin/packages`, { headers });
-            if (res.ok) {
-                const data = await res.json();
-                setPackages(data.packages || []);
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                throw new Error(data.detail || 'โหลดรายการแพ็กเกจไม่สำเร็จ');
             }
-        } catch { /* ignore */ }
-    }, [token]);
+            setPackages(data.packages || []);
+        } catch (err) {
+            setNotice({ type: 'error', text: err.message });
+        }
+    }, [headers]);
 
     const fetchPackageRequests = useCallback(async () => {
         setRequestsLoading(true);
         try {
             const query = requestStatusFilter === 'all' ? '' : `?status=${requestStatusFilter}`;
             const res = await fetch(`${API_BASE}/admin/package-requests${query}`, { headers });
-            if (res.ok) {
-                const data = await res.json();
-                setPackageRequests(data.requests || []);
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                throw new Error(data.detail || 'โหลดคำขอแพ็กเกจไม่สำเร็จ');
             }
-        } catch { /* ignore */ } finally {
+            setPackageRequests(data.requests || []);
+        } catch (err) {
+            setNotice({ type: 'error', text: err.message });
+        } finally {
             setRequestsLoading(false);
         }
-    }, [token, requestStatusFilter]);
+    }, [headers, requestStatusFilter]);
 
     useEffect(() => {
         fetchUsers(activeTab);
+    }, [activeTab, fetchUsers]);
+
+    useEffect(() => {
         fetchStats();
         fetchPackages();
+    }, [fetchStats, fetchPackages]);
+
+    useEffect(() => {
         fetchPackageRequests();
-    }, [activeTab, requestStatusFilter]);
+    }, [fetchPackageRequests]);
 
     const handleAssignPackage = async (userId, packageId) => {
         setAssigningPkg(userId);
@@ -127,9 +152,12 @@ function AdminDashboard() {
                 headers,
                 body: JSON.stringify({ package_id: packageId }),
             });
-            if (!res.ok) throw new Error('กำหนดแพ็กเกจไม่สำเร็จ');
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.detail || 'กำหนดแพ็กเกจไม่สำเร็จ');
+            setNotice({ type: 'success', text: data.message || 'กำหนดแพ็กเกจเรียบร้อย' });
+            await Promise.all([fetchUsers(activeTab), fetchPackages()]);
         } catch (err) {
-            alert(err.message);
+            setNotice({ type: 'error', text: err.message });
         } finally {
             setAssigningPkg(null);
         }
@@ -153,8 +181,9 @@ function AdminDashboard() {
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || 'ดำเนินการคำขอไม่สำเร็จ');
             await Promise.all([fetchPackageRequests(), fetchUsers(activeTab), fetchPackages()]);
+            setNotice({ type: 'success', text: data.message || 'ดำเนินการคำขอเรียบร้อย' });
         } catch (err) {
-            alert(err.message);
+            setNotice({ type: 'error', text: err.message });
         } finally {
             setRequestActionLoading(null);
         }
@@ -167,11 +196,13 @@ function AdminDashboard() {
                 method: 'PUT',
                 headers,
             });
-            if (!res.ok) throw new Error('ดำเนินการไม่สำเร็จ');
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.detail || 'ดำเนินการไม่สำเร็จ');
             // Refresh
             await Promise.all([fetchUsers(activeTab), fetchStats()]);
+            setNotice({ type: 'success', text: data.message || 'ดำเนินการเรียบร้อย' });
         } catch (err) {
-            alert(err.message);
+            setNotice({ type: 'error', text: err.message });
         } finally {
             setActionLoading(null);
         }
@@ -190,8 +221,9 @@ function AdminDashboard() {
                 throw new Error(data.detail || 'ลบผู้ใช้ไม่สำเร็จ');
             }
             await Promise.all([fetchUsers(activeTab), fetchStats()]);
+            setNotice({ type: 'success', text: 'ลบผู้ใช้เรียบร้อยแล้ว' });
         } catch (err) {
-            alert(err.message);
+            setNotice({ type: 'error', text: err.message });
         } finally {
             setActionLoading(null);
         }
@@ -254,6 +286,12 @@ function AdminDashboard() {
                     <h1>จัดการผู้ใช้งาน</h1>
                     <p>อนุมัติ ปฏิเสธ หรือระงับบัญชีผู้ใช้ที่ลงทะเบียนเข้าใช้งาน</p>
                 </div>
+
+                {notice && (
+                    <div className={`admin-notice admin-notice-${notice.type}`}>
+                        {notice.text}
+                    </div>
+                )}
 
                 <div style={{
                     display: 'flex', gap: '0.5rem', marginBottom: '1.25rem',

@@ -1,13 +1,23 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import AgendaTimeline from './AgendaTimeline'
 
 const API_BASE = '/api'
+const TRANSCRIPT_PAGE_SIZE = 150
 
 function ResultsTabs({ result, meetingType = 0, token }) {
     const [activeTab, setActiveTab] = useState('transcript')
     const [downloading, setDownloading] = useState(null)
+    const [visibleTranscriptCount, setVisibleTranscriptCount] = useState(TRANSCRIPT_PAGE_SIZE)
+    const [transcriptQuery, setTranscriptQuery] = useState('')
+    const [statusMessage, setStatusMessage] = useState(null)
 
-    const formatTime = (seconds) => {
+    useEffect(() => {
+        setVisibleTranscriptCount(TRANSCRIPT_PAGE_SIZE)
+        setTranscriptQuery('')
+        setStatusMessage(null)
+    }, [result.audio_file, result.audio_length_seconds])
+
+    const formatTime = (seconds = 0) => {
         const mins = Math.floor(seconds / 60)
         const secs = Math.floor(seconds % 60)
         return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
@@ -20,23 +30,18 @@ function ResultsTabs({ result, meetingType = 0, token }) {
         return speakerLabel
     }
 
-    const handleCopyText = (text) => {
-        navigator.clipboard.writeText(text)
-        alert('คัดลอกข้อความแล้ว!')
-    }
-
-    const handleDownloadTxt = (content, filename) => {
-        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = filename
-        a.click()
-        URL.revokeObjectURL(url)
+    const handleCopyText = async (text, label) => {
+        try {
+            await navigator.clipboard.writeText(text || '')
+            setStatusMessage({ type: 'success', text: `คัดลอก ${label} แล้ว` })
+        } catch {
+            setStatusMessage({ type: 'error', text: `คัดลอก ${label} ไม่สำเร็จ` })
+        }
     }
 
     const handleDownloadTranscriptDocx = async () => {
         setDownloading('transcript')
+        setStatusMessage(null)
         try {
             const response = await fetch(`${API_BASE}/export/transcript`, {
                 method: 'POST',
@@ -60,8 +65,9 @@ function ResultsTabs({ result, meetingType = 0, token }) {
             a.download = 'transcript.docx'
             a.click()
             URL.revokeObjectURL(url)
+            setStatusMessage({ type: 'success', text: 'ดาวน์โหลด Transcript แล้ว' })
         } catch (err) {
-            alert('เกิดข้อผิดพลาดในการดาวน์โหลด: ' + err.message)
+            setStatusMessage({ type: 'error', text: 'เกิดข้อผิดพลาดในการดาวน์โหลด: ' + err.message })
         } finally {
             setDownloading(null)
         }
@@ -69,6 +75,7 @@ function ResultsTabs({ result, meetingType = 0, token }) {
 
     const handleDownloadSummaryDocx = async () => {
         setDownloading('summary')
+        setStatusMessage(null)
         try {
             const response = await fetch(`${API_BASE}/export/summary`, {
                 method: 'POST',
@@ -93,23 +100,40 @@ function ResultsTabs({ result, meetingType = 0, token }) {
             a.download = 'summary.docx'
             a.click()
             URL.revokeObjectURL(url)
+            setStatusMessage({ type: 'success', text: 'ดาวน์โหลด Summary แล้ว' })
         } catch (err) {
-            alert('เกิดข้อผิดพลาดในการดาวน์โหลด: ' + err.message)
+            setStatusMessage({ type: 'error', text: 'เกิดข้อผิดพลาดในการดาวน์โหลด: ' + err.message })
         } finally {
             setDownloading(null)
         }
     }
 
     // Calculate speaker percentages
-    const speakerStats = result.transcript.speaker_summary
-    const totalSpeakingTime = Object.values(speakerStats.speaking_time).reduce((a, b) => a + b, 0)
+    const speakerStats = result.transcript.speaker_summary || { speaking_time: {}, word_count: {} }
+    const totalSpeakingTime = useMemo(
+        () => Object.values(speakerStats.speaking_time || {}).reduce((a, b) => a + b, 0),
+        [speakerStats],
+    )
+    const transcriptSegments = result.transcript.segments || []
+    const filteredSegments = useMemo(() => {
+        const query = transcriptQuery.trim().toLowerCase()
+        if (!query) return transcriptSegments
+        return transcriptSegments.filter(segment => {
+            const text = `${segment.speaker || ''} ${segment.text || ''}`.toLowerCase()
+            return text.includes(query)
+        })
+    }, [transcriptSegments, transcriptQuery])
+    const visibleSegments = filteredSegments.slice(0, visibleTranscriptCount)
+    const transcriptText = result.transcript.combined_text
+        || transcriptSegments.map(segment => `[${segment.speaker || 'ไม่ระบุ'}]: ${segment.text || ''}`).join('\n\n')
 
     return (
         <div>
             {/* Processing Info */}
-            <div style={{ marginBottom: '1rem', fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-                ⏱️ ประมวลผลเสร็จใน {result.processing_time.total.toFixed(1)} วินาที
+            <div className="results-meta">
+                ⏱️ ประมวลผลเสร็จใน {(result.processing_time?.total || 0).toFixed(1)} วินาที
                 | 🎵 ความยาวเสียง {formatTime(result.audio_length_seconds)}
+                | 📝 {transcriptSegments.length.toLocaleString()} segments
             </div>
 
             {/* Tabs */}
@@ -147,19 +171,50 @@ function ResultsTabs({ result, meetingType = 0, token }) {
                 {/* Transcript Tab */}
                 {activeTab === 'transcript' && (
                     <div>
-                        {result.transcript.segments.map((segment, index) => (
-                            <div key={index} className="transcript-segment">
-                                <div className="segment-header">
-                                    <span className="segment-time">
-                                        {formatTime(segment.start)} - {formatTime(segment.end)}
-                                    </span>
-                                    <span className="segment-speaker">
-                                        {buildSpeakerDisplayName(segment.speaker)}
-                                    </span>
+                        <div className="transcript-toolbar">
+                            <input
+                                className="transcript-search"
+                                type="search"
+                                placeholder="ค้นหาใน transcript หรือชื่อผู้พูด"
+                                value={transcriptQuery}
+                                onChange={(e) => {
+                                    setTranscriptQuery(e.target.value)
+                                    setVisibleTranscriptCount(TRANSCRIPT_PAGE_SIZE)
+                                }}
+                            />
+                            <span className="transcript-count">
+                                แสดง {Math.min(visibleSegments.length, filteredSegments.length).toLocaleString()} / {filteredSegments.length.toLocaleString()}
+                            </span>
+                        </div>
+
+                        {visibleSegments.length === 0 ? (
+                            <div className="transcript-empty">ไม่พบข้อความที่ค้นหา</div>
+                        ) : (
+                            visibleSegments.map((segment, index) => (
+                                <div key={`${segment.start}-${segment.end}-${index}`} className="transcript-segment">
+                                    <div className="segment-header">
+                                        <span className="segment-time">
+                                            {formatTime(segment.start)} - {formatTime(segment.end)}
+                                        </span>
+                                        <span className="segment-speaker">
+                                            {buildSpeakerDisplayName(segment.speaker)}
+                                        </span>
+                                    </div>
+                                    <p className="segment-text">{segment.text}</p>
                                 </div>
-                                <p className="segment-text">{segment.text}</p>
+                            ))
+                        )}
+
+                        {filteredSegments.length > visibleTranscriptCount && (
+                            <div className="transcript-load-more">
+                                <button
+                                    className="btn btn-secondary"
+                                    onClick={() => setVisibleTranscriptCount(prev => prev + TRANSCRIPT_PAGE_SIZE)}
+                                >
+                                    โหลดเพิ่มอีก {Math.min(TRANSCRIPT_PAGE_SIZE, filteredSegments.length - visibleTranscriptCount).toLocaleString()} segments
+                                </button>
                             </div>
-                        ))}
+                        )}
                     </div>
                 )}
 
@@ -215,13 +270,13 @@ function ResultsTabs({ result, meetingType = 0, token }) {
             <div className="actions">
                 <button
                     className="btn btn-secondary"
-                    onClick={() => handleCopyText(result.transcript.combined_text)}
+                    onClick={() => handleCopyText(transcriptText, 'Transcript')}
                 >
                     📋 คัดลอก Transcript
                 </button>
                 <button
                     className="btn btn-secondary"
-                    onClick={() => handleCopyText(result.summary)}
+                    onClick={() => handleCopyText(result.summary, 'Summary')}
                 >
                     📋 คัดลอก Summary
                 </button>
@@ -240,6 +295,12 @@ function ResultsTabs({ result, meetingType = 0, token }) {
                     {downloading === 'summary' ? '⏳ กำลังสร้าง...' : '📥 ดาวน์โหลด Summary (DOCX)'}
                 </button>
             </div>
+
+            {statusMessage && (
+                <div className={`results-status results-status-${statusMessage.type}`}>
+                    {statusMessage.text}
+                </div>
+            )}
         </div>
     )
 }

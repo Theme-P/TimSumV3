@@ -296,6 +296,16 @@ async def admin_approve_package_request(
     if not pkg or pkg.get("is_active") is False:
         raise HTTPException(status_code=404, detail="แพ็กเกจที่ขอไม่พร้อมใช้งาน")
 
+    updated = mongo_service.update_package_request_status(
+        request_id,
+        "approved",
+        reviewed_by=str(admin.id),
+        admin_note=req.admin_note,
+        expected_status="pending",
+    )
+    if not updated:
+        raise HTTPException(status_code=400, detail="คำขอนี้ถูกพิจารณาแล้ว")
+
     mongo_service.assign_user_package(
         user_id=package_request["user_id"],
         package_id=package_request["requested_package_id"],
@@ -303,12 +313,6 @@ async def admin_approve_package_request(
         reset_usage=req.reset_usage,
         source="package_request",
         request_id=request_id,
-    )
-    mongo_service.update_package_request_status(
-        request_id,
-        "approved",
-        reviewed_by=str(admin.id),
-        admin_note=req.admin_note,
     )
     mongo_service.log_activity(
         str(admin.id),
@@ -339,9 +343,10 @@ async def admin_reject_package_request(
         "rejected",
         reviewed_by=str(admin.id),
         admin_note=req.admin_note,
+        expected_status="pending",
     )
     if not updated:
-        raise HTTPException(status_code=404, detail="ไม่พบคำขอ")
+        raise HTTPException(status_code=400, detail="คำขอนี้ถูกพิจารณาแล้ว")
     mongo_service.log_activity(
         str(admin.id),
         "admin_reject_package_request",

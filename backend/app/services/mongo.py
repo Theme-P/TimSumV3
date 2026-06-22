@@ -6,6 +6,7 @@ from typing import Optional
 
 from bson import ObjectId
 from pymongo import MongoClient
+from pymongo.errors import DuplicateKeyError
 from app.models.user import User, UserData, Quota, USER_STATUS_APPROVED, VALID_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,16 @@ class MongoService:
         self.db.package_request.create_index([("status", 1), ("requested_at", -1)], background=True)
         self.db.package_request.create_index([("user_id", 1), ("status", 1)], background=True)
         self.db.package_assignment_history.create_index([("user_id", 1), ("changed_at", -1)], background=True)
+        try:
+            self.db.package_request.create_index(
+                [("user_id", 1)],
+                unique=True,
+                partialFilterExpression={"status": "pending"},
+                name="uniq_pending_package_request_per_user",
+                background=True,
+            )
+        except Exception as e:
+            logger.warning("Could not create unique pending package_request index: %s", e)
 
     def _hash_password(self, password: str, salt: Optional[str] = None) -> tuple[str, str]:
         """Hash password with salt using PBKDF2."""
@@ -527,18 +538,20 @@ class MongoService:
             "reviewed_at": None,
             "reviewed_by": None,
         }
-        self.db.package_request.insert_one(doc)
+        try:
+            self.db.package_request.insert_one(doc)
+        except DuplicateKeyError:
+            raise ValueError("คุณมีคำขอเปลี่ยนแพ็กเกจที่รอการพิจารณาอยู่แล้ว")
         return str(doc["_id"])
 
-    def _serialize_package_request(self, doc: dict) -> dict:
-        """Serialize package request with joined user/package information."""
-        user = self.db.user.find_one(
-            {"_id": doc["user_id"]},
-            {"password": 0, "salt": 0},
-        )
-        current_pkg = self.db.package.find_one({"_id": doc.get("current_package_id")}) if doc.get("current_package_id") else None
-        requested_pkg = self.db.package.find_one({"_id": doc.get("requested_package_id")}) if doc.get("requested_package_id") else None
-
+    def _format_package_request(
+        self,
+        doc: dict,
+        user: Optional[dict] = None,
+        current_pkg: Optional[dict] = None,
+        requested_pkg: Optional[dict] = None,
+    ) -> dict:
+        """Serialize package request with already-joined user/package information."""
         result = {
             "_id": str(doc["_id"]),
             "user_id": str(doc["user_id"]),
@@ -579,6 +592,16 @@ class MongoService:
             }
         return result
 
+    def _serialize_package_request(self, doc: dict) -> dict:
+        """Serialize a single package request with joined user/package information."""
+        user = self.db.user.find_one(
+            {"_id": doc["user_id"]},
+            {"password": 0, "salt": 0},
+        )
+        current_pkg = self.db.package.find_one({"_id": doc.get("current_package_id")}) if doc.get("current_package_id") else None
+        requested_pkg = self.db.package.find_one({"_id": doc.get("requested_package_id")}) if doc.get("requested_package_id") else None
+        return self._format_package_request(doc, user, current_pkg, requested_pkg)
+
     def get_package_requests(self, status: str = None, user_id: str = None, limit: int = 100) -> list:
         """List package change requests."""
         query = {}
@@ -592,7 +615,34 @@ class MongoService:
             .sort("requested_at", -1)
             .limit(limit)
         )
-        return [self._serialize_package_request(doc) for doc in cursor]
+        docs = list(cursor)
+        if not docs:
+            return []
+
+        user_ids = list({doc["user_id"] for doc in docs})
+        package_ids = {
+            pkg_id
+            for doc in docs
+            for pkg_id in (doc.get("current_package_id"), doc.get("requested_package_id"))
+            if pkg_id
+        }
+        users = {
+            doc["_id"]: doc
+            for doc in self.db.user.find({"_id": {"$in": user_ids}}, {"password": 0, "salt": 0})
+        }
+        packages = {
+            doc["_id"]: doc
+            for doc in self.db.package.find({"_id": {"$in": list(package_ids)}})
+        }
+        return [
+            self._format_package_request(
+                doc,
+                users.get(doc["user_id"]),
+                packages.get(doc.get("current_package_id")),
+                packages.get(doc.get("requested_package_id")),
+            )
+            for doc in docs
+        ]
 
     def get_package_request_by_id(self, request_id: str) -> Optional[dict]:
         doc = self.db.package_request.find_one({"_id": ObjectId(request_id)})
@@ -606,10 +656,14 @@ class MongoService:
         status: str,
         reviewed_by: str = None,
         admin_note: str = "",
+        expected_status: str = None,
     ) -> bool:
         """Update package request review status."""
+        query = {"_id": ObjectId(request_id)}
+        if expected_status:
+            query["status"] = expected_status
         result = self.db.package_request.update_one(
-            {"_id": ObjectId(request_id)},
+            query,
             {"$set": {
                 "status": status,
                 "admin_note": (admin_note or "").strip()[:1000],
@@ -701,6 +755,54 @@ class MongoService:
             )
             if self.cache:
                 self.cache.invalidate_user_package(user_id)
+
+    def reserve_upload_quota(self, user_id: str, transcription_minutes: float) -> dict:
+        """Atomically reserve one upload, one summary, and its audio minutes."""
+        up = self.get_user_package(user_id)
+        if not up or not up.get("package"):
+            return {"allowed": False, "reason": "ไม่พบแพ็กเกจ กรุณาติดต่อผู้ดูแลระบบ"}
+
+        usage = up.get("usage", {})
+        limits = up["package"].get("limits", {})
+        max_files = limits.get("max_files_per_month", 0)
+        max_summaries = limits.get("ai_summary_per_month", 0)
+        max_minutes = limits.get("transcription_minutes_per_month", 0)
+        minutes = max(float(transcription_minutes or 0), 0)
+
+        if usage.get("files_this_month", 0) >= max_files:
+            return {"allowed": False, "reason": "จำนวนไฟล์ที่อัปโหลดเดือนนี้ครบแล้ว"}
+        if usage.get("ai_summaries_this_month", 0) >= max_summaries:
+            return {"allowed": False, "reason": "จำนวน AI สรุปเดือนนี้ครบแล้ว"}
+        if usage.get("transcription_minutes_this_month", 0) + minutes > max_minutes:
+            return {"allowed": False, "reason": "นาทีการถอดเสียงเดือนนี้ไม่เพียงพอสำหรับไฟล์นี้"}
+
+        result = self.db.user_package.update_one(
+            {
+                "user_id": ObjectId(user_id),
+                "usage.files_this_month": {"$lt": max_files},
+                "usage.ai_summaries_this_month": {"$lt": max_summaries},
+                "usage.transcription_minutes_this_month": {"$lte": max_minutes - minutes},
+            },
+            {"$inc": {
+                "usage.files_this_month": 1,
+                "usage.ai_summaries_this_month": 1,
+                "usage.transcription_minutes_this_month": minutes,
+            }},
+        )
+        if self.cache:
+            self.cache.invalidate_user_package(user_id)
+        if result.modified_count == 0:
+            return {"allowed": False, "reason": "โควต้าถูกใช้เต็มแล้ว กรุณาตรวจสอบแพ็กเกจอีกครั้ง"}
+        return {"allowed": True}
+
+    def refund_upload_quota(self, user_id: str, transcription_minutes: float) -> None:
+        """Best-effort rollback for a quota reservation when enqueueing fails."""
+        self.increment_usage(
+            user_id,
+            files=-1,
+            ai_summaries=-1,
+            transcription_minutes=-max(float(transcription_minutes or 0), 0),
+        )
 
     def check_package_limits(self, user_id: str) -> dict:
         """Check if user is within package limits. Returns {allowed, reason, usage, limits}."""

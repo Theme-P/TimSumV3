@@ -12,7 +12,7 @@ from bson import ObjectId
 from fastapi import APIRouter, File, Form, UploadFile, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
 
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, get_current_consented_user
 from app.models.user import UserData
 from app.models.voice_sample import (
     MAX_VOICE_SAMPLES_PER_USER,
@@ -39,7 +39,7 @@ async def upload_voice_sample(
     audio: UploadFile = File(..., description="Voice audio clip (5-30s recommended)"),
     speaker_name: str = Form(..., description="Speaker name (e.g. คุณเจษฎา)"),
     speaker_position: str = Form("", description="Speaker position (optional)"),
-    user: UserData = Depends(get_current_user),
+    user: UserData = Depends(get_current_consented_user),
     mongo: MongoService = Depends(_get_mongo),
     storage: StorageService = Depends(_get_storage),
 ):

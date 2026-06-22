@@ -80,7 +80,9 @@ export const AuthProvider = ({ children }) => {
         try {
             const payload = JSON.parse(atob(token.split('.')[1]));
             userRole = payload.role || 'user';
-        } catch { /* ignore */ }
+        } catch (err) {
+            console.warn('Unable to read user role from token', err);
+        }
     }
 
     return (

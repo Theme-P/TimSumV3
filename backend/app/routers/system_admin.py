@@ -1,11 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, Any
-import psutil
 import subprocess
-import os
 
 from app.core.auth import get_current_admin
 from app.models.user import UserData
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 router = APIRouter()
 
@@ -15,6 +18,9 @@ def get_system_resources(current_user: UserData = Depends(get_current_admin)) ->
     Get current system resource usage: CPU, RAM, Disk.
     Access restricted to Admin/SuperAdmin.
     """
+    if psutil is None:
+        raise HTTPException(status_code=503, detail="System resource monitoring requires psutil")
+
     try:
         # CPU
         cpu_percent = psutil.cpu_percent(interval=0.5)

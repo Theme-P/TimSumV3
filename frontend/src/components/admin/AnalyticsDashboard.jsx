@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 
 const API_BASE = '/api';
 
@@ -102,25 +102,38 @@ function AnalyticsDashboard({ token }) {
     const [daily, setDaily] = useState([]);
     const [pkgStats, setPkgStats] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
     const [days, setDays] = useState(30);
 
-    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+    const headers = useMemo(() => ({
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+    }), [token]);
 
     const fetchAll = useCallback(async () => {
         setLoading(true);
+        setError(null);
         try {
             const [ovRes, dailyRes, pkgRes] = await Promise.all([
                 fetch(`${API_BASE}/admin/analytics/overview`, { headers }),
                 fetch(`${API_BASE}/admin/analytics/daily?days=${days}`, { headers }),
                 fetch(`${API_BASE}/admin/analytics/packages`, { headers }),
             ]);
-            if (ovRes.ok) { const d = await ovRes.json(); setOverview(d); }
-            if (dailyRes.ok) { const d = await dailyRes.json(); setDaily(d.daily || []); }
-            if (pkgRes.ok) { const d = await pkgRes.json(); setPkgStats(d.packages || []); }
-        } catch { /* ignore */ } finally {
+            const overviewData = await ovRes.json();
+            const dailyData = await dailyRes.json();
+            const packageData = await pkgRes.json();
+            if (!ovRes.ok) throw new Error(overviewData.detail || 'โหลดภาพรวมไม่สำเร็จ');
+            if (!dailyRes.ok) throw new Error(dailyData.detail || 'โหลดสถิติรายวันไม่สำเร็จ');
+            if (!pkgRes.ok) throw new Error(packageData.detail || 'โหลดสถิติแพ็กเกจไม่สำเร็จ');
+            setOverview(overviewData);
+            setDaily(dailyData.daily || []);
+            setPkgStats(packageData.packages || []);
+        } catch (err) {
+            setError(err.message);
+        } finally {
             setLoading(false);
         }
-    }, [token, days]);
+    }, [headers, days]);
 
     useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -130,6 +143,8 @@ function AnalyticsDashboard({ token }) {
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            {error && <div className="admin-notice admin-notice-error">{error}</div>}
+
             {/* Overview Cards */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.75rem' }}>
                 <StatCard label="ผู้ใช้ทั้งหมด" value={overview?.total_users || 0} color="#3498db"

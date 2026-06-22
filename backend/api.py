@@ -6,17 +6,19 @@ import os
 import tempfile
 import shutil
 import uuid
+import subprocess
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Depends, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List
 from io import BytesIO
 from dotenv import load_dotenv
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from bson import ObjectId
 
 # Load environment variables
 load_dotenv()
@@ -43,7 +45,7 @@ from app.routers.queue import router as queue_router
 from app.routers.system_admin import router as system_admin_router
 from app.routers.meeting_template import router as meeting_template_router
 from app.routers.llm_config import router as llm_config_router
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, get_current_consented_user
 from app.models.user import UserData
 
 # Initialize FastAPI app
@@ -70,6 +72,50 @@ def get_mongo_service(request: Request) -> MongoService:
 def get_storage(request: Request) -> StorageService:
     """Get MinIO storage service from app state."""
     return request.app.state.storage_service
+
+
+def _user_owns_clip_prefix(mongo_service: MongoService, user_id: ObjectId, clip_prefix: str) -> bool:
+    """Return True when the requested speaker-clip prefix belongs to the user."""
+    if not clip_prefix or "/" in clip_prefix or "\\" in clip_prefix or ".." in clip_prefix:
+        return False
+
+    try:
+        if ObjectId.is_valid(clip_prefix):
+            clip_obj_id = ObjectId(clip_prefix)
+            if mongo_service.db.job.find_one({"_id": clip_obj_id, "user_id": user_id}, {"_id": 1}):
+                return True
+
+        return bool(mongo_service.db.session.find_one(
+            {"clip_prefix": clip_prefix, "user_id": user_id},
+            {"_id": 1},
+        ))
+    except Exception:
+        return False
+
+
+def _probe_audio_duration_seconds(file_path: str) -> float:
+    """Read audio/video duration with ffprobe."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                file_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise ValueError(result.stderr.strip() or "ffprobe failed")
+        duration = float(result.stdout.strip())
+        if duration <= 0:
+            raise ValueError("Invalid duration")
+        return duration
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Cannot read audio duration: {exc}")
 
 
 # Enable CORS for frontend (whitelist from env)
@@ -289,6 +335,7 @@ class ExportSummaryRequest(BaseModel):
     summary: str
     speaker_summary: dict = None  # Optional: speaking_time and word_count per speaker
     meeting_type_id: int = 0  # Meeting type for position formatting
+    agendas: List[dict] = Field(default_factory=list)
 
 
 # ===================== ENDPOINTS =====================
@@ -370,58 +417,111 @@ async def transcribe_summarize(
     # Upload to MinIO
     file_id = str(uuid.uuid4())
     object_name = f"{file_id}{file_ext}"
+    temp_upload_path = None
+    object_uploaded = False
+    quota_reserved = False
+    job_id = None
+    duration_seconds = 0.0
+    duration_minutes = 0.0
 
     try:
-        content = await audio.read()
-
-        # Server-side file size validation
         max_bytes = MAX_UPLOAD_MB * 1024 * 1024
-        if len(content) > max_bytes:
+        total_bytes = 0
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp:
+            temp_upload_path = tmp.name
+            while True:
+                chunk = await audio.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Maximum size: {MAX_UPLOAD_MB} MB"
+                    )
+                tmp.write(chunk)
+
+        if total_bytes == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+        duration_seconds = _probe_audio_duration_seconds(temp_upload_path)
+        duration_minutes = duration_seconds / 60
+        max_minutes_per_file = limit_check.get("max_audio_minutes_per_file", 30)
+        if max_minutes_per_file > 0 and duration_minutes > max_minutes_per_file:
             raise HTTPException(
-                status_code=413,
-                detail=f"File too large. Maximum size: {MAX_UPLOAD_MB} MB"
+                status_code=403,
+                detail=f"ไฟล์เสียงยาวเกินแพ็กเกจที่กำหนด ({max_minutes_per_file} นาที/ไฟล์)",
             )
 
-        storage.upload_stream(
-            BUCKET_AUDIO, object_name,
-            BytesIO(content), len(content),
+        reservation = mongo_service.reserve_upload_quota(str(user.id), duration_minutes)
+        if not reservation.get("allowed"):
+            raise HTTPException(status_code=403, detail=reservation.get("reason", "เกินโควต้าการใช้งาน"))
+        quota_reserved = True
+
+        storage.upload_file(
+            BUCKET_AUDIO,
+            object_name,
+            temp_upload_path,
             content_type=audio.content_type or "audio/mpeg",
         )
+        object_uploaded = True
+
+        # Create job in MongoDB (store MinIO object name instead of file path)
+        job_id = mongo_service.create_job(
+            user_id=user.id,
+            audio_file=audio.filename,
+            meeting_type_id=meeting_type_id,
+            audio_path=object_name,
+            email_recipient=email_recipient,
+        )
+
+        # Fetch voice samples if voice matching is enabled
+        voice_samples_data = None
+        if use_voice_matching:
+            voice_samples_data = mongo_service.get_voice_samples_with_embeddings(str(user.id))
+            if not voice_samples_data:
+                voice_samples_data = None  # No samples to match against
+
+        # Send task to Celery worker
+        process_audio.delay(
+            job_id=job_id,
+            audio_object=object_name,
+            original_filename=audio.filename,
+            meeting_type_id=meeting_type_id,
+            user_id=str(user.id),
+            email_recipient=email_recipient,
+            custom_prompt=custom_prompt,
+            voice_samples=voice_samples_data,
+        )
     except HTTPException:
+        if quota_reserved:
+            mongo_service.refund_upload_quota(str(user.id), duration_minutes)
+        if object_uploaded:
+            try:
+                storage.delete_object(BUCKET_AUDIO, object_name)
+            except Exception:
+                pass
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save upload: {str(e)}")
-
-    # Create job in MongoDB (store MinIO object name instead of file path)
-    job_id = mongo_service.create_job(
-        user_id=user.id,
-        audio_file=audio.filename,
-        meeting_type_id=meeting_type_id,
-        audio_path=object_name,
-        email_recipient=email_recipient,
-    )
-
-    # Fetch voice samples if voice matching is enabled
-    voice_samples_data = None
-    if use_voice_matching:
-        voice_samples_data = mongo_service.get_voice_samples_with_embeddings(str(user.id))
-        if not voice_samples_data:
-            voice_samples_data = None  # No samples to match against
-
-    # Send task to Celery worker
-    process_audio.delay(
-        job_id=job_id,
-        audio_object=object_name,
-        original_filename=audio.filename,
-        meeting_type_id=meeting_type_id,
-        user_id=str(user.id),
-        email_recipient=email_recipient,
-        custom_prompt=custom_prompt,
-        voice_samples=voice_samples_data,
-    )
-
-    # Increment usage counters (files + ai summaries)
-    mongo_service.increment_usage(str(user.id), files=1, ai_summaries=1)
+        if quota_reserved:
+            mongo_service.refund_upload_quota(str(user.id), duration_minutes)
+        if object_uploaded:
+            try:
+                storage.delete_object(BUCKET_AUDIO, object_name)
+            except Exception:
+                pass
+        if job_id and ObjectId.is_valid(job_id):
+            mongo_service.db.job.update_one(
+                {"_id": ObjectId(job_id)},
+                {"$set": {"status": "failed", "error": f"Failed to enqueue task: {str(e)}"}},
+            )
+        raise HTTPException(status_code=500, detail=f"Failed to queue upload: {str(e)}")
+    finally:
+        if temp_upload_path and os.path.exists(temp_upload_path):
+            try:
+                os.remove(temp_upload_path)
+            except Exception:
+                pass
 
     # Activity log
     client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "")
@@ -513,7 +613,8 @@ async def export_summary(request: ExportSummaryRequest, _user: UserData = Depend
             summary_text=request.summary,
             output_path=output_path,
             speaker_summary=request.speaker_summary,
-            meeting_type_id=request.meeting_type_id
+            meeting_type_id=request.meeting_type_id,
+            agendas=request.agendas,
         )
         
         return FileResponse(
@@ -534,7 +635,8 @@ async def export_summary(request: ExportSummaryRequest, _user: UserData = Depend
 async def get_speaker_clip(
     session_id: str,
     filename: str,
-    _user: UserData = Depends(get_current_user),
+    user: UserData = Depends(get_current_consented_user),
+    mongo_service: MongoService = Depends(get_mongo_service),
     storage: StorageService = Depends(get_storage),
 ):
     """
@@ -546,6 +648,8 @@ async def get_speaker_clip(
     # Validate filename (prevent path traversal)
     if '/' in filename or '..' in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
+    if not _user_owns_clip_prefix(mongo_service, user.id, session_id):
+        raise HTTPException(status_code=404, detail="Clip not found")
 
     object_name = f"{session_id}/{filename}"
     if not storage.object_exists(BUCKET_CLIPS, object_name):
@@ -562,12 +666,15 @@ async def get_speaker_clip(
 @app.delete("/api/session/{session_id}")
 async def cleanup_session(
     session_id: str,
-    _user: UserData = Depends(get_current_user),
+    user: UserData = Depends(get_current_user),
+    mongo_service: MongoService = Depends(get_mongo_service),
     storage: StorageService = Depends(get_storage),
 ):
     """
     Cleanup speaker clips for a session from MinIO.
     """
+    if not _user_owns_clip_prefix(mongo_service, user.id, session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
     storage.delete_prefix(BUCKET_CLIPS, prefix=f"{session_id}/")
     return {"success": True, "message": "Session cleaned up"}
 
@@ -583,6 +690,7 @@ class EmailResultsRequest(BaseModel):
     audio_length_seconds: float = 0
     speaker_summary: dict = None
     meeting_type_id: int = 0
+    agendas: List[dict] = Field(default_factory=list)
 
 
 @app.post("/api/email-results")
@@ -605,7 +713,8 @@ async def email_results(request: EmailResultsRequest, _user: UserData = Depends(
             summary_text=request.summary,
             output_path=summary_path,
             speaker_summary=request.speaker_summary,
-            meeting_type_id=request.meeting_type_id
+            meeting_type_id=request.meeting_type_id,
+            agendas=request.agendas,
         )
         docx_files.append((summary_path, f"{request.file_name}_Summary"))
 

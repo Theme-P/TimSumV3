@@ -63,9 +63,11 @@ function AdminLLMSettings() {
     const [templateTesting, setTemplateTesting] = useState(false);
     const [templateTestResult, setTemplateTestResult] = useState('');
     const [templateTestPrompt, setTemplateTestPrompt] = useState('กรุณาสรุปให้หน่อย:\nนายก: วันนี้เรามาประชุมเรื่องงบประมาณประจำปี\nนายข: เห็นด้วยครับ ควรเพิ่มงบการตลาด\nนายก: โอเค สรุปตามนั้น');
+    const [feedback, setFeedback] = useState(null);
 
     const [showDropdown, setShowDropdown] = useState(false);
     const dropdownRef = useRef(null);
+    const selectedTemplateIdRef = useRef(null);
 
     useEffect(() => {
         const handleClickOutside = (e) => {
@@ -76,6 +78,16 @@ function AdminLLMSettings() {
         document.addEventListener('mousedown', handleClickOutside);
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
+
+    useEffect(() => {
+        selectedTemplateIdRef.current = selectedTemplateId;
+    }, [selectedTemplateId]);
+
+    useEffect(() => {
+        if (!feedback) return;
+        const timer = setTimeout(() => setFeedback(null), 4500);
+        return () => clearTimeout(timer);
+    }, [feedback]);
 
     const hydrateLlmForm = (config) => {
         setLlmForm({
@@ -109,7 +121,7 @@ function AdminLLMSettings() {
             const data = await res.json();
             setTemplates(data || []);
             if (data.length > 0) {
-                const selected = data.find(item => item.meeting_type_id === selectedTemplateId) || data[0];
+                const selected = data.find(item => item.meeting_type_id === selectedTemplateIdRef.current) || data[0];
                 setSelectedTemplateId(selected.meeting_type_id);
                 setTemplateForm({
                     system_prompt: selected.system_prompt,
@@ -122,7 +134,7 @@ function AdminLLMSettings() {
         } finally {
             setTemplatesLoading(false);
         }
-    }, [headers, selectedTemplateId]);
+    }, [headers]);
 
     useEffect(() => {
         fetchLlmConfig();
@@ -143,10 +155,17 @@ function AdminLLMSettings() {
 
     const handleSaveLlmConfig = async () => {
         const fallbackModels = parseFallbackModels(llmForm.fallback_models);
-        if (!llmForm.primary_model.trim()) return alert('กรุณาระบุ Primary model');
-        if (fallbackModels.length === 0) return alert('กรุณาระบุ Fallback model อย่างน้อย 1 รายการ');
+        if (!llmForm.primary_model.trim()) {
+            setFeedback({ type: 'error', text: 'กรุณาระบุ Primary model' });
+            return;
+        }
+        if (fallbackModels.length === 0) {
+            setFeedback({ type: 'error', text: 'กรุณาระบุ Fallback model อย่างน้อย 1 รายการ' });
+            return;
+        }
 
         setLlmSaving(true);
+        setFeedback(null);
         try {
             const res = await fetch(`${API_BASE}/admin/llm-configs/default_fallback`, {
                 method: 'PUT',
@@ -161,19 +180,23 @@ function AdminLLMSettings() {
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || 'บันทึก LLM config ไม่สำเร็จ');
             hydrateLlmForm(data);
-            alert('บันทึก LLM config เรียบร้อยแล้ว');
+            setFeedback({ type: 'success', text: 'บันทึก LLM config เรียบร้อยแล้ว' });
         } catch (err) {
-            alert(err.message);
+            setFeedback({ type: 'error', text: err.message });
         } finally {
             setLlmSaving(false);
         }
     };
 
     const handleTestLlmConfig = async () => {
-        if (!llmTestPrompt.trim()) return alert('กรุณากรอกข้อความทดสอบ');
+        if (!llmTestPrompt.trim()) {
+            setFeedback({ type: 'error', text: 'กรุณากรอกข้อความทดสอบ' });
+            return;
+        }
 
         setLlmTesting(true);
         setLlmTestResult('');
+        setFeedback(null);
         try {
             const res = await fetch(`${API_BASE}/admin/llm-configs/test`, {
                 method: 'POST',
@@ -201,6 +224,7 @@ function AdminLLMSettings() {
         if (!selectedTemplateId) return;
 
         setTemplateSaving(true);
+        setFeedback(null);
         try {
             const res = await fetch(`${API_BASE}/admin/meeting-templates/${selectedTemplateId}`, {
                 method: 'PUT',
@@ -213,20 +237,24 @@ function AdminLLMSettings() {
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || 'บันทึก template ไม่สำเร็จ');
-            alert('บันทึก prompt template เรียบร้อยแล้ว');
+            setFeedback({ type: 'success', text: 'บันทึก prompt template เรียบร้อยแล้ว' });
             await fetchTemplates();
         } catch (err) {
-            alert(err.message);
+            setFeedback({ type: 'error', text: err.message });
         } finally {
             setTemplateSaving(false);
         }
     };
 
     const handleTestTemplate = async () => {
-        if (!templateTestPrompt.trim()) return alert('กรุณากรอก User Prompt เพื่อทดสอบ');
+        if (!templateTestPrompt.trim()) {
+            setFeedback({ type: 'error', text: 'กรุณากรอก User Prompt เพื่อทดสอบ' });
+            return;
+        }
 
         setTemplateTesting(true);
         setTemplateTestResult('');
+        setFeedback(null);
         try {
             const res = await fetch(`${API_BASE}/admin/meeting-templates/test`, {
                 method: 'POST',
@@ -329,6 +357,12 @@ function AdminLLMSettings() {
 
                 {activeSection === 'models' && (
                     <section className="llm-settings-panel">
+                        {feedback && (
+                            <div className={`llm-feedback llm-feedback-${feedback.type}`}>
+                                {feedback.text}
+                            </div>
+                        )}
+
                         <div className="llm-panel-header">
                             <div>
                                 <h2>ตั้งค่า Runtime LLM</h2>
@@ -410,6 +444,12 @@ function AdminLLMSettings() {
 
                 {activeSection === 'templates' && (
                     <section className="llm-settings-panel">
+                        {feedback && (
+                            <div className={`llm-feedback llm-feedback-${feedback.type}`}>
+                                {feedback.text}
+                            </div>
+                        )}
+
                         <div className="llm-panel-header">
                             <div>
                                 <h2>ตั้งค่า Prompt Template</h2>

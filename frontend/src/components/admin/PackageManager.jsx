@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 
 const API_BASE = '/api';
 
@@ -25,24 +25,37 @@ function PackageManager({ token }) {
     const [form, setForm] = useState({ ...EMPTY_FORM });
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState(null);
+    const [status, setStatus] = useState(null);
     const [showInactive, setShowInactive] = useState(false);
 
-    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+    const headers = useMemo(() => ({
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+    }), [token]);
 
     const fetchPackages = useCallback(async () => {
         setLoading(true);
         try {
             const res = await fetch(`${API_BASE}/admin/packages?active_only=${!showInactive}`, { headers });
-            if (res.ok) {
-                const data = await res.json();
-                setPackages(data.packages || []);
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'โหลดแพ็กเกจไม่สำเร็จ');
             }
-        } catch { /* ignore */ } finally {
+            setPackages(data.packages || []);
+        } catch (err) {
+            setStatus({ type: 'error', text: err.message });
+        } finally {
             setLoading(false);
         }
-    }, [token, showInactive]);
+    }, [headers, showInactive]);
 
     useEffect(() => { fetchPackages(); }, [fetchPackages]);
+
+    useEffect(() => {
+        if (!status) return;
+        const timer = setTimeout(() => setStatus(null), 4500);
+        return () => clearTimeout(timer);
+    }, [status]);
 
     const openCreate = () => {
         setEditingId(null);
@@ -84,6 +97,7 @@ function PackageManager({ token }) {
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || 'บันทึกไม่สำเร็จ');
             setShowForm(false);
+            setStatus({ type: 'success', text: data.message || 'บันทึกแพ็กเกจเรียบร้อย' });
             fetchPackages();
         } catch (err) {
             setError(err.message);
@@ -100,9 +114,10 @@ function PackageManager({ token }) {
                 const data = await res.json();
                 throw new Error(data.detail || 'ลบไม่สำเร็จ');
             }
+            setStatus({ type: 'success', text: 'ปิดใช้งานแพ็กเกจเรียบร้อย' });
             fetchPackages();
         } catch (err) {
-            alert(err.message);
+            setStatus({ type: 'error', text: err.message });
         }
     };
 
@@ -136,6 +151,12 @@ function PackageManager({ token }) {
                     + สร้างแพ็กเกจ
                 </button>
             </div>
+
+            {status && (
+                <div className={`admin-notice admin-notice-${status.type}`}>
+                    {status.text}
+                </div>
+            )}
 
             {/* Package Table */}
             {loading ? (

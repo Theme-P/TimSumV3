@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import ResultsTabs from './ResultsTabs'
 
@@ -14,11 +14,8 @@ function HistoryView() {
 
     const { token } = useAuth()
 
-    useEffect(() => {
-        fetchHistory()
-    }, [])
-
-    const fetchHistory = async () => {
+    const fetchHistory = useCallback(async () => {
+        if (!token) return
         setLoading(true)
         setError(null)
         try {
@@ -33,7 +30,11 @@ function HistoryView() {
         } finally {
             setLoading(false)
         }
-    }
+    }, [token])
+
+    useEffect(() => {
+        fetchHistory()
+    }, [fetchHistory])
 
     const handleToggle = async (sessionId) => {
         if (expandedId === sessionId) {
@@ -151,6 +152,8 @@ function HistoryView() {
                                         processing_time: detailData.processing_time,
                                         transcript: detailData.transcript,
                                         summary: detailData.summary,
+                                        agendas: detailData.agendas || [],
+                                        detection_mode: detailData.detection_mode || 'single_topic',
                                     }}
                                     meetingType={detailData.meeting_type_id}
                                     token={token}

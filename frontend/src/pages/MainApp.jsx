@@ -56,6 +56,7 @@ function MainApp() {
     const [useVoiceMatching, setUseVoiceMatching] = useState(false)
     const dropdownRef = useRef(null)
     const resultLoadedRef = useRef(false)
+    const pollTimeoutRef = useRef(null)
 
     const { token, logout } = useAuth()
     const userInfo = token ? getUserInfo(token) : { initials: 'ผู้', username: '', email: '' }
@@ -91,6 +92,15 @@ function MainApp() {
             })
             .catch(() => { })
     }, [token])
+
+    useEffect(() => {
+        return () => {
+            if (pollTimeoutRef.current) {
+                clearTimeout(pollTimeoutRef.current)
+                pollTimeoutRef.current = null
+            }
+        }
+    }, [])
 
     useEffect(() => {
         const handleClickOutside = (e) => {
@@ -170,7 +180,7 @@ function MainApp() {
             const pipelineRunning = job.status !== 'completed' && job.status !== 'failed'
             const emailInFlight = job.email_status === 'queued' || job.email_status === 'sending'
             if (pipelineRunning || emailInFlight) {
-                setTimeout(() => pollJobStatus(jobId), 3000)
+                pollTimeoutRef.current = setTimeout(() => pollJobStatus(jobId), 3000)
             }
         } catch (err) {
             setError(err.message || 'เกิดข้อผิดพลาดในการติดตามสถานะ')
@@ -192,6 +202,10 @@ function MainApp() {
         setAutoEmailError(null)
         setEmailStatus(null)
         resultLoadedRef.current = false
+        if (pollTimeoutRef.current) {
+            clearTimeout(pollTimeoutRef.current)
+            pollTimeoutRef.current = null
+        }
 
         try {
             const formData = new FormData()
@@ -246,6 +260,7 @@ function MainApp() {
                 audio_length_seconds: displayResult.audio_length_seconds || 0,
                 speaker_summary: displayResult.transcript.speaker_summary,
                 meeting_type_id: meetingType,
+                agendas: displayResult.agendas || [],
             }
             const res = await fetch(`${API_BASE}/email-results`, {
                 method: 'POST',

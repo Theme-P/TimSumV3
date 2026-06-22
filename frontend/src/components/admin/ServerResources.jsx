@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 
 const ServerResources = () => {
@@ -6,9 +6,10 @@ const ServerResources = () => {
   const [resources, setResources] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [status, setStatus] = useState(null);
   const [restarting, setRestarting] = useState(false);
 
-  const fetchResources = async () => {
+  const fetchResources = useCallback(async () => {
     try {
       setLoading(true);
       setError('');
@@ -23,13 +24,19 @@ const ServerResources = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [token]);
 
   useEffect(() => {
     fetchResources();
     const interval = setInterval(fetchResources, 30000);
     return () => clearInterval(interval);
-  }, [token]);
+  }, [fetchResources]);
+
+  useEffect(() => {
+    if (!status) return;
+    const timer = setTimeout(() => setStatus(null), 4500);
+    return () => clearTimeout(timer);
+  }, [status]);
 
   const handleRestartOllama = async () => {
     if (!window.confirm("คุณต้องการเริ่มระบบ Ollama ใหม่ใช่หรือไม่? (อาจทำให้การทำงานที่กำลังรันอยู่หยุดชะงัก)")) {
@@ -43,10 +50,10 @@ const ServerResources = () => {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Failed to restart Ollama');
-      alert(data.message || 'Ollama restarted successfully');
+      setStatus({ type: 'success', text: data.message || 'รีสตาร์ท Ollama เรียบร้อย' });
       fetchResources();
     } catch (err) {
-      alert('Error restarting Ollama: ' + err.message);
+      setStatus({ type: 'error', text: `รีสตาร์ท Ollama ไม่สำเร็จ: ${err.message}` });
     } finally {
       setRestarting(false);
     }
@@ -139,6 +146,12 @@ const ServerResources = () => {
           </button>
         )}
       </div>
+
+      {status && (
+        <div className={`admin-notice admin-notice-${status.type}`}>
+          {status.text}
+        </div>
+      )}
 
       {error ? (
         <div className="upload-error">{error}</div>
