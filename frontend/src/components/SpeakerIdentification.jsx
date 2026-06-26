@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 
 const API_BASE = '/api'
 
-function SpeakerIdentification({ result, sessionId, onMappingChange, isCollapsed, onToggleCollapse }) {
+function SpeakerIdentification({ result, sessionId, token, onMappingChange, isCollapsed, onToggleCollapse }) {
     const speakerStats = result.transcript.speaker_summary
     const speakerClips = result.speaker_clips || {}
     const suggestedNames = result.suggested_names || {}
@@ -38,6 +38,17 @@ function SpeakerIdentification({ result, sessionId, onMappingChange, isCollapsed
         onMappingChange(mapping)
     }, [speakerNames])
 
+    useEffect(() => {
+        return () => {
+            if (audioRef.current) {
+                audioRef.current.pause()
+                if (audioRef.current.objectUrl) {
+                    URL.revokeObjectURL(audioRef.current.objectUrl)
+                }
+            }
+        }
+    }, [])
+
     const formatTime = (seconds) => {
         const mins = Math.floor(seconds / 60)
         const secs = Math.floor(seconds % 60)
@@ -51,33 +62,56 @@ function SpeakerIdentification({ result, sessionId, onMappingChange, isCollapsed
         }))
     }
 
-    const handlePlayClip = (speaker) => {
+    const revokeCurrentAudioUrl = () => {
+        if (audioRef.current?.objectUrl) {
+            URL.revokeObjectURL(audioRef.current.objectUrl)
+            audioRef.current.objectUrl = null
+        }
+    }
+
+    const handlePlayClip = async (speaker) => {
         const clip = speakerClips[speaker]
-        if (!clip || !sessionId) return
+        if (!clip || !sessionId || !token) return
 
         const clipUrl = `${API_BASE}/speaker-clip/${sessionId}/${clip.clip_filename}`
 
         if (playingSpeaker === speaker && audioRef.current) {
             audioRef.current.pause()
             audioRef.current.currentTime = 0
+            revokeCurrentAudioUrl()
             setPlayingSpeaker(null)
             return
         }
 
         if (audioRef.current) {
             audioRef.current.pause()
+            revokeCurrentAudioUrl()
         }
 
-        const audio = new Audio(clipUrl)
-        audioRef.current = audio
-        setPlayingSpeaker(speaker)
+        try {
+            const res = await fetch(clipUrl, {
+                headers: { 'Authorization': `Bearer ${token}` },
+            })
+            if (!res.ok) throw new Error('Failed to load speaker clip')
 
-        audio.play().catch(err => {
+            const objectUrl = URL.createObjectURL(await res.blob())
+            const audio = new Audio(objectUrl)
+            audio.objectUrl = objectUrl
+            audioRef.current = audio
+            setPlayingSpeaker(speaker)
+
+            audio.play().catch(err => {
+                console.error('Audio play error:', err)
+                revokeCurrentAudioUrl()
+                setPlayingSpeaker(null)
+            })
+
+            audio.onended = () => {
+                revokeCurrentAudioUrl()
+                setPlayingSpeaker(null)
+            }
+        } catch (err) {
             console.error('Audio play error:', err)
-            setPlayingSpeaker(null)
-        })
-
-        audio.onended = () => {
             setPlayingSpeaker(null)
         }
     }

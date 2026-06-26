@@ -9,6 +9,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+WORKER_CONCURRENCY = int(os.getenv("CELERY_WORKER_CONCURRENCY", "1"))
+WORKER_PREFETCH_MULTIPLIER = int(os.getenv("CELERY_WORKER_PREFETCH_MULTIPLIER", "1"))
+WORKER_MAX_TASKS_PER_CHILD = int(os.getenv("CELERY_WORKER_MAX_TASKS_PER_CHILD", "0"))
 
 celery_app = Celery(
     "timsumv3",
@@ -23,9 +26,10 @@ celery_app.conf.update(
     accept_content=["json"],
     result_serializer="json",
 
-    # Worker settings — one task at a time (GPU bound)
-    worker_concurrency=1,
-    worker_prefetch_multiplier=1,
+    # Worker settings — one task at a time per GPU by default.
+    # Prefetch=1 prevents one worker from reserving many long GPU jobs.
+    worker_concurrency=WORKER_CONCURRENCY,
+    worker_prefetch_multiplier=WORKER_PREFETCH_MULTIPLIER,
 
     # Task settings
     task_acks_late=True,
@@ -38,3 +42,6 @@ celery_app.conf.update(
     # Timezone
     timezone="Asia/Bangkok",
 )
+
+if WORKER_MAX_TASKS_PER_CHILD > 0:
+    celery_app.conf.worker_max_tasks_per_child = WORKER_MAX_TASKS_PER_CHILD

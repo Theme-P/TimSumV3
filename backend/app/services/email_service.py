@@ -4,13 +4,20 @@ Email Service — ported from TimSumV2ToV3.
 Sends DOCX results via email with HTML template.
 All config comes from environment variables; service is optional —
 if SMTP_SERVER is not set, email functions gracefully return errors.
+
+Security notes:
+- SSL cert verification is enabled by default.
+  Set SMTP_SKIP_VERIFY=true only for internal/self-signed servers.
+- HTML body is escaped before injection into the template (XSS prevention).
+- Connection timeout is set to 10 s to prevent indefinite hangs.
 """
 
+import html
 import os
 import smtplib
 import ssl
 import time
-import random
+import uuid
 import logging
 from email import encoders
 from email.header import Header
@@ -20,6 +27,8 @@ from email.mime.text import MIMEText
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+_SMTP_CONNECT_TIMEOUT = 10  # seconds — prevents indefinite hang on unresponsive servers
 
 
 class EmailService:
@@ -39,81 +48,126 @@ class EmailService:
         self.username = username or os.getenv("EMAIL_USERNAME", "")
         self.password = password or os.getenv("EMAIL_PASSWORD", "")
         self.sender_email = sender_email or os.getenv("SENDER_EMAIL", "")
-        self.smtp_secure = (smtp_secure if smtp_secure is not None else os.getenv("SMTP_SECURE", "")).strip().lower()
-        
+        self.smtp_secure = (
+            smtp_secure if smtp_secure is not None else os.getenv("SMTP_SECURE", "")
+        ).strip().lower()
+
         self.debug_mode = os.getenv("EMAIL_DEBUG", "false").lower() == "true"
-        
+
+        # Allow skipping cert verification for internal/self-signed SMTP servers.
+        # Disabled by default — must be explicitly opted in.
+        self._skip_verify = os.getenv("SMTP_SKIP_VERIFY", "false").lower() == "true"
+
         if self.debug_mode:
-            logger.debug(f"[EMAIL DEBUG] SMTP Configuration: "
-                        f"host={self.smtp_server}, port={self.smtp_port}, "
-                        f"user={'YES' if self.username else 'NO_USER'}, "
-                        f"hasPassword={'YES' if self.password else 'NO'}, "
-                        f"secure={self.smtp_secure or 'auto'}")
-        
+            logger.debug(
+                "[EMAIL DEBUG] SMTP Configuration: "
+                f"host={self.smtp_server}, port={self.smtp_port}, "
+                f"user={'YES' if self.username else 'NO_USER'}, "
+                f"hasPassword={'YES' if self.password else 'NO'}, "
+                f"secure={self.smtp_secure or 'auto'}, "
+                f"skipVerify={self._skip_verify}"
+            )
+
         if self.is_configured:
-            logger.info(f"[EMAIL INIT] EmailService configured with server={self.smtp_server}:{self.smtp_port}, sender={self.sender_email}")
+            logger.info(
+                f"[EMAIL INIT] EmailService configured with "
+                f"server={self.smtp_server}:{self.smtp_port}, sender={self.sender_email}"
+            )
         else:
-            logger.warning("[EMAIL INIT] EmailService is not fully configured (missing SMTP_SERVER or SENDER_EMAIL)")
+            logger.warning(
+                "[EMAIL INIT] EmailService is not fully configured "
+                "(missing SMTP_SERVER or SENDER_EMAIL)"
+            )
 
     @property
     def is_configured(self) -> bool:
-        """Check if SMTP is configured."""
+        """Check if minimum SMTP config is present."""
         return bool(self.smtp_server and self.sender_email)
 
-    def _get_smtp_connection(self):
-        """Create and return appropriate SMTP connection based on port configuration."""
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        security_mode = self._resolve_security_mode()
+    def _make_ssl_context(self) -> ssl.SSLContext:
+        """Build SSL context.
 
-        if security_mode == "plain":
-            if self.debug_mode:
-                logger.debug("[EMAIL DEBUG] Using plain SMTP")
-            
-            server = smtplib.SMTP(self.smtp_server, self.smtp_port)
-            if self.debug_mode:
-                server.set_debuglevel(1)
-            if self.username and self.password:
-                server.login(self.username, self.password)
-            return server
+        Cert verification is enabled by default.
+        Set SMTP_SKIP_VERIFY=true to allow self-signed/internal server certs.
+        """
+        if self._skip_verify:
+            # Intentionally insecure — only for internal SMTP servers
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            logger.warning(
+                "[EMAIL SSL] Certificate verification DISABLED (SMTP_SKIP_VERIFY=true). "
+                "Use only for internal/self-signed servers."
+            )
+            return context
+        # Secure default: verify server certificate
+        return ssl.create_default_context()
+
+    def _get_smtp_connection(self):
+        """Create and return appropriate SMTP connection based on security mode."""
+        context = self._make_ssl_context()
+        security_mode = self._resolve_security_mode()
 
         if security_mode == "ssl":
             if self.debug_mode:
-                logger.debug("[EMAIL DEBUG] Using SMTP with SSL")
-            server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port, context=context)
-            if self.username and self.password:
-                server.login(self.username, self.password)
-            return server
-            
-        if security_mode == "starttls":
-            if self.debug_mode:
-                logger.debug("[EMAIL DEBUG] Using SMTP with STARTTLS")
-            server = smtplib.SMTP(self.smtp_server, self.smtp_port)
-            server.starttls(context=context)
+                logger.debug("[EMAIL DEBUG] Using SMTP_SSL (implicit TLS)")
+            server = smtplib.SMTP_SSL(
+                self.smtp_server, self.smtp_port,
+                context=context,
+                timeout=_SMTP_CONNECT_TIMEOUT,
+            )
+            server.ehlo()
             if self.username and self.password:
                 server.login(self.username, self.password)
             return server
 
-        logger.warning(f"[EMAIL SMTP] Unsupported SMTP_SECURE={self.smtp_secure!r}; falling back to plain SMTP")
-        server = smtplib.SMTP(self.smtp_server, self.smtp_port)
+        if security_mode == "starttls":
+            if self.debug_mode:
+                logger.debug("[EMAIL DEBUG] Using SMTP with STARTTLS")
+            server = smtplib.SMTP(
+                self.smtp_server, self.smtp_port,
+                timeout=_SMTP_CONNECT_TIMEOUT,
+            )
+            server.ehlo()
+            server.starttls(context=context)
+            server.ehlo()  # Re-identify after STARTTLS upgrade
+            if self.username and self.password:
+                server.login(self.username, self.password)
+            return server
+
+        # Plain SMTP (port 25 / internal relay)
+        if self.debug_mode:
+            logger.debug("[EMAIL DEBUG] Using plain SMTP")
+        server = smtplib.SMTP(
+            self.smtp_server, self.smtp_port,
+            timeout=_SMTP_CONNECT_TIMEOUT,
+        )
+        if self.debug_mode:
+            server.set_debuglevel(1)
+        server.ehlo()
         if self.username and self.password:
             server.login(self.username, self.password)
         return server
 
     def _resolve_security_mode(self) -> str:
-        """Resolve SMTP security mode from SMTP_SECURE with port-based defaults."""
+        """Resolve SMTP security mode from SMTP_SECURE env var with port-based fallback."""
         if self.smtp_secure in {"true", "ssl", "smtps", "465"}:
             return "ssl"
         if self.smtp_secure in {"starttls", "tls", "587"}:
             return "starttls"
         if self.smtp_secure in {"false", "none", "plain", "0", "no", "off"}:
             return "plain"
+        # Port-based auto-detection when SMTP_SECURE is not set
         if self.smtp_port == 465:
             return "ssl"
         if self.smtp_port == 587:
             return "starttls"
         return "plain"
+
+    def _make_message_id(self) -> str:
+        """Generate a RFC 5322-compliant Message-ID using the sender domain."""
+        domain = self.sender_email.split("@")[-1] if "@" in self.sender_email else self.smtp_server
+        return f"<{int(time.time())}.{uuid.uuid4().hex[:8]}@{domain}>"
 
     def send_email_with_attachments(
         self,
@@ -124,13 +178,13 @@ class EmailService:
     ) -> bool:
         """
         Send an email with multiple DOCX file attachments.
-        
+
         Args:
             recipient_email: Recipient email address
             subject: Email subject
-            body_text: Plain text body
+            body_text: Plain text body (will be HTML-escaped before rendering)
             docx_files: List of (file_path, display_name) tuples
-            
+
         Returns: True if sent successfully, False otherwise
         """
         if not self.is_configured:
@@ -138,7 +192,7 @@ class EmailService:
             return False
 
         try:
-            msg = MIMEMultipart('mixed')
+            msg = MIMEMultipart("mixed")
             msg["From"] = f"TimSum <{self.sender_email}>"
             msg["To"] = recipient_email
             msg["Subject"] = f"[TimSum] {subject}"
@@ -146,31 +200,32 @@ class EmailService:
             msg["Return-Path"] = self.sender_email
             msg["X-Mailer"] = "TimSumV3"
             msg["X-Priority"] = "3"
-            msg["Message-ID"] = f"<{int(time.time())}.{random.randint(1000,9999)}@timsumv3>"
+            msg["Message-ID"] = self._make_message_id()
             msg["MIME-Version"] = "1.0"
-            
-            # Alternative text/html parts
-            msg_alternative = MIMEMultipart('alternative')
+
+            # Multipart/alternative carries plain text + HTML
+            msg_alternative = MIMEMultipart("alternative")
             msg_alternative.attach(MIMEText(body_text, "plain", "utf-8"))
-            
             html_body = self._html_template(body_text)
             msg_alternative.attach(MIMEText(html_body, "html", "utf-8"))
-            
             msg.attach(msg_alternative)
 
-            # Attachments
+            # DOCX attachments
             for file_path, display_name in docx_files:
                 with Path(file_path).open("rb") as f:
-                    part = MIMEBase("application", "vnd.openxmlformats-officedocument.wordprocessingml.document")
+                    part = MIMEBase(
+                        "application",
+                        "vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
                     part.set_payload(f.read())
                 encoders.encode_base64(part)
-                
+
                 safe_filename = f"{display_name}.docx"
                 try:
                     encoded_filename = Header(safe_filename, "utf-8").encode()
                 except UnicodeEncodeError:
-                    encoded_filename = safe_filename.encode('ascii', 'ignore').decode('ascii')
-                
+                    encoded_filename = safe_filename.encode("ascii", "ignore").decode("ascii")
+
                 part.add_header("Content-Disposition", f'attachment; filename="{encoded_filename}"')
                 msg.attach(part)
 
@@ -178,10 +233,10 @@ class EmailService:
                 message = msg.as_string()
                 if self.debug_mode:
                     logger.debug(f"[EMAIL DEBUG] Message size: {len(message)} bytes")
-                    
+
                 smtp_result = server.sendmail(self.sender_email, recipient_email, message)
                 if smtp_result:
-                    logger.warning(f"[EMAIL DEBUG] Some recipients rejected: {smtp_result}")
+                    logger.warning(f"[EMAIL] Some recipients rejected: {smtp_result}")
 
             logger.info(f"Email sent successfully to {recipient_email}")
             return True
@@ -195,7 +250,7 @@ class EmailService:
         recipient_email: str,
         subject: str,
         body_text: str,
-        body_html: str = None,
+        body_html: str | None = None,
     ) -> bool:
         """Send a simple email without attachments."""
         if not self.is_configured:
@@ -203,7 +258,7 @@ class EmailService:
             return False
 
         try:
-            msg = MIMEMultipart('alternative')
+            msg = MIMEMultipart("alternative")
             msg["From"] = f"TimSum <{self.sender_email}>"
             msg["To"] = recipient_email
             msg["Subject"] = f"[TimSum] {subject}"
@@ -211,16 +266,13 @@ class EmailService:
             msg["Return-Path"] = self.sender_email
             msg["X-Mailer"] = "TimSumV3"
             msg["X-Priority"] = "3"
-            msg["Message-ID"] = f"<{int(time.time())}.{random.randint(1000,9999)}@timsumv3>"
+            msg["Message-ID"] = self._make_message_id()
             msg["MIME-Version"] = "1.0"
-            
+
             msg.attach(MIMEText(body_text, "plain", "utf-8"))
-            
-            if body_html:
-                msg.attach(MIMEText(body_html, "html", "utf-8"))
-            else:
-                html_body = self._html_template(body_text)
-                msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+            rendered_html = body_html if body_html else self._html_template(body_text)
+            msg.attach(MIMEText(rendered_html, "html", "utf-8"))
 
             with self._get_smtp_connection() as server:
                 server.sendmail(self.sender_email, recipient_email, msg.as_string())
@@ -233,8 +285,13 @@ class EmailService:
             return False
 
     def _html_template(self, body_text: str) -> str:
-        """Create a professional HTML email template."""
-        body_html = body_text.replace('\n', '<br>')
+        """Render body_text into a professional HTML email template.
+
+        body_text is HTML-escaped before injection to prevent XSS.
+        Newlines are converted to <br> after escaping.
+        """
+        # Escape HTML special chars first, then convert newlines → <br>
+        escaped = html.escape(body_text).replace("\n", "<br>")
         return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -257,7 +314,7 @@ class EmailService:
 <tr>
 <td>
 <div style="margin-top: 10px; padding: 10px; background-color: #ffffff; border-radius: 4px;">
-{body_html}
+{escaped}
 </div>
 </td>
 </tr>

@@ -222,57 +222,6 @@
     cursor: not-allowed;
 }
 
-/* ===== Divider ===== */
-.login-divider {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    color: #9ca3af;
-    font-size: 0.82rem;
-}
-
-.login-divider::before,
-.login-divider::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: #e5e7eb;
-}
-
-/* ===== Google Button ===== */
-.login-google-btn {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.6rem;
-    padding: 0.8rem;
-    background: #ffffff;
-    border: 1px solid #d1d5db;
-    border-radius: 10px;
-    font-size: 0.9rem;
-    font-weight: 500;
-    color: #374151;
-    cursor: pointer;
-    transition: background 0.2s, border-color 0.2s;
-}
-
-.login-google-btn:hover {
-    background: #f9fafb;
-    border-color: #9ca3af;
-}
-
-.login-google-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
-.login-google-gsi {
-    width: 100%;
-    display: flex;
-    justify-content: center;
-}
-
 /* ===== Register Link ===== */
 .login-register-text {
     text-align: center;

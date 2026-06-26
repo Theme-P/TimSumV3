@@ -63,6 +63,16 @@ class MongoService:
         except Exception as e:
             logger.warning("Could not create unique pending package_request index: %s", e)
 
+    @staticmethod
+    def _object_id(value: str) -> Optional[ObjectId]:
+        """Return an ObjectId for valid strings; otherwise None."""
+        try:
+            if not ObjectId.is_valid(str(value)):
+                return None
+            return ObjectId(str(value))
+        except Exception:
+            return None
+
     def _hash_password(self, password: str, salt: Optional[str] = None) -> tuple[str, str]:
         """Hash password with salt using PBKDF2."""
         if salt is None:
@@ -172,7 +182,9 @@ class MongoService:
 
     def delete_user(self, user_id: str) -> None:
         """Delete a user by their ID and clean up related data."""
-        obj_id = ObjectId(user_id)
+        obj_id = self._object_id(user_id)
+        if not obj_id:
+            raise ValueError("User not found")
         result = self.db.user.delete_one({"_id": obj_id})
         if result.deleted_count == 0:
             msg = "User not found"
@@ -193,73 +205,6 @@ class MongoService:
         if result.deleted_count == 0:
             msg = "Quota not found for user"
             raise ValueError(msg)
-
-    # ── Google SSO ──
-
-    def find_or_create_google_user(self, google_id: str, email: str, name: str) -> User:
-        """
-        Find existing user by email or create a new Google SSO user.
-        - If user exists with same email → link google_id and return (must be approved).
-        - If user doesn't exist → create with status=approved, random password.
-        Returns User or raises ValueError if user exists but is not approved.
-        """
-        existing = self.db.user.find_one({"email": email})
-
-        if existing:
-            user = User(**existing)
-            status = existing.get("status", USER_STATUS_APPROVED)
-            if status != USER_STATUS_APPROVED:
-                raise ValueError(status)
-            # Link google_id if not already set
-            if not existing.get("google_id"):
-                self.db.user.update_one(
-                    {"_id": existing["_id"]},
-                    {"$set": {"google_id": google_id}},
-                )
-            return user
-
-        # Create new user with random password (Google users login via SSO only)
-        random_password = secrets.token_urlsafe(32)
-        hashed_password, salt = self._hash_password(random_password)
-
-        # Split name into first/last
-        name_parts = name.strip().split(" ", 1)
-        first_name = name_parts[0]
-        last_name = name_parts[1] if len(name_parts) > 1 else ""
-
-        user_doc = {
-            "_id": ObjectId(),
-            "username": name or email.split("@")[0],
-            "email": email,
-            "password": hashed_password,
-            "salt": salt,
-            "role": "user",
-            "status": USER_STATUS_APPROVED,
-            "first_name": first_name,
-            "last_name": last_name,
-            "google_id": google_id,
-            "registered_at": datetime.now(timezone.utc),
-            "approved_at": datetime.now(timezone.utc),
-            "approved_by": "google_sso",
-        }
-        self.db.user.insert_one(user_doc)
-
-        # Create quota for the new user
-        quota_doc = {
-            "_id": ObjectId(),
-            "user_id": user_doc["_id"],
-            "value1": 0, "value2": 0, "value3": 0, "value4": 0,
-        }
-        self.db.quota.insert_one(quota_doc)
-
-        # Assign default TimSumBasic package
-        basic_pkg = self.get_package_by_name("TimSumBasic")
-        if basic_pkg:
-            self.assign_user_package(
-                str(user_doc["_id"]), basic_pkg["_id"], assigned_by="google_sso"
-            )
-
-        return User(**user_doc)
 
     # ── User Status & Admin Management ──
 
@@ -313,6 +258,9 @@ class MongoService:
         if status not in VALID_STATUSES:
             msg = f"Invalid status: {status}"
             raise ValueError(msg)
+        user_obj_id = self._object_id(user_id)
+        if not user_obj_id:
+            return False
 
         update_fields = {"status": status}
         if status == USER_STATUS_APPROVED and admin_id:
@@ -320,7 +268,7 @@ class MongoService:
             update_fields["approved_by"] = admin_id
 
         result = self.db.user.update_one(
-            {"_id": ObjectId(user_id)},
+            {"_id": user_obj_id},
             {"$set": update_fields},
         )
         return result.matched_count > 0
@@ -363,8 +311,11 @@ class MongoService:
 
     def update_package_by_id(self, package_id: str, pkg_data: dict) -> bool:
         """Update an existing package by ID."""
+        obj_id = self._object_id(package_id)
+        if not obj_id:
+            return False
         result = self.db.package.update_one(
-            {"_id": ObjectId(package_id)},
+            {"_id": obj_id},
             {"$set": pkg_data},
         )
         if result.matched_count and self.cache:
@@ -373,8 +324,11 @@ class MongoService:
 
     def deactivate_package(self, package_id: str) -> bool:
         """Soft-delete a package by marking it inactive."""
+        obj_id = self._object_id(package_id)
+        if not obj_id:
+            return False
         result = self.db.package.update_one(
-            {"_id": ObjectId(package_id)},
+            {"_id": obj_id},
             {"$set": {"is_active": False}},
         )
         if result.matched_count and self.cache:
@@ -408,7 +362,10 @@ class MongoService:
 
     def get_package_by_id(self, package_id: str) -> Optional[dict]:
         """Get a single package by ID."""
-        doc = self.db.package.find_one({"_id": ObjectId(package_id)})
+        obj_id = self._object_id(package_id)
+        if not obj_id:
+            return None
+        doc = self.db.package.find_one({"_id": obj_id})
         if not doc:
             return None
         doc["_id"] = str(doc["_id"])
@@ -436,8 +393,11 @@ class MongoService:
         """Assign a package to a user. Returns user_package id."""
         now = datetime.now(timezone.utc)
         current_month = now.strftime("%Y-%m")
-        user_obj_id = ObjectId(user_id)
-        package_obj_id = ObjectId(package_id)
+        user_obj_id = self._object_id(user_id)
+        package_obj_id = self._object_id(package_id)
+        request_obj_id = self._object_id(request_id) if request_id else None
+        if not user_obj_id or not package_obj_id or (request_id and not request_obj_id):
+            raise ValueError("Invalid user, package, or request ID")
         current = self.db.user_package.find_one({"user_id": user_obj_id})
 
         if reset_usage or not current:
@@ -485,7 +445,7 @@ class MongoService:
             "changed_by": assigned_by,
             "changed_at": now,
             "source": source,
-            "request_id": ObjectId(request_id) if request_id else None,
+            "request_id": request_obj_id,
             "reset_usage": reset_usage,
         })
 
@@ -496,8 +456,10 @@ class MongoService:
 
     def create_package_request(self, user_id: str, requested_package_id: str, note: str = "") -> str:
         """Create a user package change request."""
-        user_obj_id = ObjectId(user_id)
-        requested_obj_id = ObjectId(requested_package_id)
+        user_obj_id = self._object_id(user_id)
+        requested_obj_id = self._object_id(requested_package_id)
+        if not user_obj_id or not requested_obj_id:
+            raise ValueError("ไม่พบแพ็กเกจที่ต้องการ")
 
         pending = self.db.package_request.find_one({
             "user_id": user_obj_id,
@@ -608,7 +570,10 @@ class MongoService:
         if status:
             query["status"] = status
         if user_id:
-            query["user_id"] = ObjectId(user_id)
+            user_obj_id = self._object_id(user_id)
+            if not user_obj_id:
+                return []
+            query["user_id"] = user_obj_id
 
         cursor = (
             self.db.package_request.find(query)
@@ -645,7 +610,10 @@ class MongoService:
         ]
 
     def get_package_request_by_id(self, request_id: str) -> Optional[dict]:
-        doc = self.db.package_request.find_one({"_id": ObjectId(request_id)})
+        obj_id = self._object_id(request_id)
+        if not obj_id:
+            return None
+        doc = self.db.package_request.find_one({"_id": obj_id})
         if not doc:
             return None
         return self._serialize_package_request(doc)
@@ -659,7 +627,10 @@ class MongoService:
         expected_status: str = None,
     ) -> bool:
         """Update package request review status."""
-        query = {"_id": ObjectId(request_id)}
+        obj_id = self._object_id(request_id)
+        if not obj_id:
+            return False
+        query = {"_id": obj_id}
         if expected_status:
             query["status"] = expected_status
         result = self.db.package_request.update_one(
@@ -675,8 +646,12 @@ class MongoService:
 
     def cancel_package_request(self, request_id: str, user_id: str) -> bool:
         """Cancel a pending request by owner."""
+        request_obj_id = self._object_id(request_id)
+        user_obj_id = self._object_id(user_id)
+        if not request_obj_id or not user_obj_id:
+            return False
         result = self.db.package_request.update_one(
-            {"_id": ObjectId(request_id), "user_id": ObjectId(user_id), "status": "pending"},
+            {"_id": request_obj_id, "user_id": user_obj_id, "status": "pending"},
             {"$set": {
                 "status": "cancelled",
                 "reviewed_at": datetime.now(timezone.utc),
@@ -687,12 +662,15 @@ class MongoService:
 
     def get_user_package(self, user_id: str) -> Optional[dict]:
         """Get user's current package assignment with package details."""
+        user_obj_id = self._object_id(user_id)
+        if not user_obj_id:
+            return None
         if self.cache:
             cached = self.cache.get_user_package(user_id)
             if cached is not None:
                 return cached
 
-        up = self.db.user_package.find_one({"user_id": ObjectId(user_id)})
+        up = self.db.user_package.find_one({"user_id": user_obj_id})
         if not up:
             return None
 
@@ -803,6 +781,35 @@ class MongoService:
             ai_summaries=-1,
             transcription_minutes=-max(float(transcription_minutes or 0), 0),
         )
+
+    def refund_job_quota_once(self, job_id: str) -> bool:
+        """Refund a job quota reservation once when a queued/processing job fails or is cancelled."""
+        try:
+            job_obj_id = ObjectId(job_id)
+        except Exception:
+            return False
+
+        job = self.db.job.find_one_and_update(
+            {
+                "_id": job_obj_id,
+                "quota_reserved": True,
+                "quota_refunded": {"$ne": True},
+            },
+            {"$set": {"quota_refunded": True}},
+        )
+        if not job:
+            return False
+
+        try:
+            self.refund_upload_quota(str(job["user_id"]), job.get("quota_minutes", 0))
+            return True
+        except Exception as exc:
+            logger.warning("Could not refund quota for job %s: %s", job_id, exc)
+            self.db.job.update_one(
+                {"_id": job_obj_id},
+                {"$set": {"quota_refunded": False, "quota_refund_error": str(exc)}},
+            )
+            return False
 
     def check_package_limits(self, user_id: str) -> dict:
         """Check if user is within package limits. Returns {allowed, reason, usage, limits}."""
@@ -920,8 +927,11 @@ class MongoService:
 
     def get_session_by_id(self, session_id: str, user_id: ObjectId) -> Optional[dict]:
         """Get full session detail by ID (only if owned by user)."""
+        session_obj_id = self._object_id(session_id)
+        if not session_obj_id:
+            return None
         doc = self.db.session.find_one({
-            "_id": ObjectId(session_id),
+            "_id": session_obj_id,
             "user_id": user_id,
         })
         if not doc:
@@ -941,6 +951,7 @@ class MongoService:
         meeting_type_id: int,
         audio_path: str,
         email_recipient: str = "",
+        quota_minutes: float = 0.0,
     ) -> str:
         """Create a new processing job. Returns job ID."""
         doc = {
@@ -955,7 +966,12 @@ class MongoService:
             "session_id": None,
             "error": None,
             "celery_task_id": None,
+            "quota_reserved": True,
+            "quota_minutes": max(float(quota_minutes or 0), 0),
+            "quota_refunded": False,
             "created_at": datetime.now(timezone.utc),
+            "started_at": None,
+            "queue_wait_seconds": None,
             "completed_at": None,
             # Email auto-send fields. email_status: null | queued | sending | sent | failed
             "email_recipient": email_recipient or None,
@@ -968,8 +984,11 @@ class MongoService:
 
     def get_job(self, job_id: str, user_id: ObjectId) -> Optional[dict]:
         """Get job status (only if owned by user). Returns lightweight status."""
+        job_obj_id = self._object_id(job_id)
+        if not job_obj_id:
+            return None
         doc = self.db.job.find_one(
-            {"_id": ObjectId(job_id), "user_id": user_id},
+            {"_id": job_obj_id, "user_id": user_id},
             # Exclude heavy result data for status polling
             {"result": 0},
         )
@@ -977,15 +996,18 @@ class MongoService:
             return None
         doc["_id"] = str(doc["_id"])
         doc["user_id"] = str(doc["user_id"])
-        for ts_field in ("created_at", "completed_at", "email_sent_at"):
+        for ts_field in ("created_at", "started_at", "completed_at", "email_sent_at"):
             if doc.get(ts_field):
                 doc[ts_field] = doc[ts_field].isoformat()
         return doc
 
     def get_job_result(self, job_id: str, user_id: ObjectId) -> Optional[dict]:
         """Get full job result (only when completed)."""
+        job_obj_id = self._object_id(job_id)
+        if not job_obj_id:
+            return None
         doc = self.db.job.find_one({
-            "_id": ObjectId(job_id),
+            "_id": job_obj_id,
             "user_id": user_id,
             "status": "completed",
         })
@@ -995,6 +1017,8 @@ class MongoService:
         doc["user_id"] = str(doc["user_id"])
         if doc.get("created_at"):
             doc["created_at"] = doc["created_at"].isoformat()
+        if doc.get("started_at"):
+            doc["started_at"] = doc["started_at"].isoformat()
         if doc.get("completed_at"):
             doc["completed_at"] = doc["completed_at"].isoformat()
         return doc
@@ -1222,8 +1246,11 @@ class MongoService:
 
     def cancel_job(self, job_id: str) -> bool:
         """Mark a queued/processing job as cancelled. Returns True if updated."""
+        job_obj_id = self._object_id(job_id)
+        if not job_obj_id:
+            return False
         result = self.db.job.update_one(
-            {"_id": ObjectId(job_id), "status": {"$in": ["queued", "processing"]}},
+            {"_id": job_obj_id, "status": {"$in": ["queued", "processing"]}},
             {"$set": {
                 "status": "cancelled",
                 "completed_at": datetime.now(timezone.utc),

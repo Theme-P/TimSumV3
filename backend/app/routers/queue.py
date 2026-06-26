@@ -59,6 +59,7 @@ async def cancel_task(
     cancelled = mongo.cancel_job(job_id)
     if not cancelled:
         raise HTTPException(status_code=400, detail="ไม่สามารถยกเลิกงานได้")
+    mongo.refund_job_quota_once(job_id)
 
     mongo.log_activity(str(admin.id), "admin_cancel_job", resource_type="job", resource_id=job_id)
     return {"success": True, "message": "ยกเลิกงานเรียบร้อยแล้ว"}

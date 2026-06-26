@@ -17,10 +17,6 @@ from app.core.auth import get_jwt_secret, get_current_admin
 # pyrefly: ignore [missing-import]
 from bson import ObjectId
 
-# Google SSO
-from google.oauth2 import id_token as google_id_token
-from google.auth.transport import requests as google_requests
-
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
@@ -203,82 +199,6 @@ async def register_public(
         raise HTTPException(status_code=500, detail="เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง")
 
 
-# ── Google SSO ──
-
-class GoogleAuthRequest(BaseModel):
-    credential: str  # Google ID token from GIS
-
-
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
-
-
-@router.get("/google/client-id")
-async def google_client_id():
-    """Return Google Client ID for frontend GIS initialization."""
-    if not GOOGLE_CLIENT_ID:
-        return {"enabled": False, "client_id": ""}
-    return {"enabled": True, "client_id": GOOGLE_CLIENT_ID}
-
-
-@router.post("/google")
-async def google_login(
-    req: GoogleAuthRequest,
-    mongo_service: MongoService = Depends(get_mongo_service),
-):
-    """Authenticate via Google SSO. Creates user if new (auto-approved)."""
-    if not GOOGLE_CLIENT_ID:
-        raise HTTPException(status_code=501, detail="Google SSO ยังไม่ได้ตั้งค่า")
-
-    # Verify the Google ID token
-    try:
-        idinfo = google_id_token.verify_oauth2_token(
-            req.credential,
-            google_requests.Request(),
-            GOOGLE_CLIENT_ID,
-        )
-    except ValueError as e:
-        logger.warning(f"Google token verification failed: {e}")
-        raise HTTPException(status_code=401, detail="Google token ไม่ถูกต้องหรือหมดอายุ")
-
-    google_sub = idinfo.get("sub")
-    email = idinfo.get("email", "").lower().strip()
-    name = idinfo.get("name", "")
-
-    if not email:
-        raise HTTPException(status_code=400, detail="ไม่สามารถดึงอีเมลจาก Google ได้")
-
-    try:
-        user = mongo_service.find_or_create_google_user(
-            google_id=google_sub,
-            email=email,
-            name=name,
-        )
-    except ValueError as status:
-        # User exists but is not approved
-        msg = _STATUS_MESSAGES.get(str(status), "ไม่สามารถเข้าสู่ระบบได้")
-        raise HTTPException(status_code=403, detail=msg)
-    except Exception as e:
-        logger.error(f"Google SSO error: {e}")
-        raise HTTPException(status_code=500, detail="เกิดข้อผิดพลาดในการเข้าสู่ระบบด้วย Google")
-
-    # Generate JWT token (same as regular login)
-    secret = get_jwt_secret()
-    expire_hours = int(os.getenv("JWT_EXPIRE_HOURS", "8"))
-    token_payload = {
-        "id": str(user.id),
-        "username": user.username,
-        "email": user.email,
-        "role": user.role,
-        "exp": datetime.now(timezone.utc) + timedelta(hours=expire_hours),
-    }
-    token = jwt.encode(token_payload, secret, algorithm="HS256")
-
-    return {
-        "status": "success",
-        "message": "Google login successful",
-        "token": token,
-    }
-
 # ── Password Reset ──
 
 @router.post("/forgot-password")
@@ -307,7 +227,7 @@ async def forgot_password(
             
         reset_link = f"{origin}/reset-password?token={token}"
         
-        email_service = EmailService()
+        email_service: EmailService = request.app.state.email_service
         if email_service.is_configured:
             body_text = f"สวัสดี,\n\nคุณได้ร้องขอการเปลี่ยนรหัสผ่านสำหรับบัญชี TimSum\nกรุณาคลิกที่ลิงก์ด้านล่างเพื่อตั้งรหัสผ่านใหม่ (ลิงก์มีอายุ 1 ชั่วโมง):\n\n{reset_link}\n\nหากคุณไม่ได้ทำรายการนี้ กรุณาเพิกเฉยต่ออีเมลฉบับนี้\n\nขอบคุณครับ,\nทีมงาน TimSum"
             email_service.send_simple_email(
@@ -316,7 +236,8 @@ async def forgot_password(
                 body_text=body_text
             )
         else:
-            logger.info(f"Password reset link generated for {req.email}: {reset_link}")
+            # Token is intentionally NOT logged — it acts as a credential
+            logger.info(f"Password reset link generated for {req.email} (SMTP not configured)")
             
         return {"status": "success", "message": "หากอีเมลนี้อยู่ในระบบ เราได้ส่งลิงก์รีเซ็ตรหัสผ่านไปให้แล้ว"}
     except Exception as e:
@@ -348,4 +269,3 @@ async def reset_password(
     except Exception as e:
         logger.error(f"Reset password error: {e}")
         raise HTTPException(status_code=500, detail="เกิดข้อผิดพลาดในการเปลี่ยนรหัสผ่าน")
-

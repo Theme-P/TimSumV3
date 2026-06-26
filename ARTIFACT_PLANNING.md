@@ -271,29 +271,9 @@
 | `frontend/src/components/SettingsModal.jsx` | Removed account/package sections. Now only theme and about. |
 | `frontend/src/pages/MainApp.jsx` | Added `showProfile` state and wired "โปรไฟล์" button. |
 
-### Phase 7 — Completed 2026-05-21
+### Phase 7 — Removed
 
-**Scope:** Google SSO — Sign in with Google using GIS. Auto-creates approved users. Links to existing accounts by email.
-
-**Backend changes:**
-| File | Change |
-|------|--------|
-| `backend/requirements.txt` | Added `google-auth>=2.29.0`. |
-| `backend/app/models/user.py` | Added `google_id: Optional[str]` field. |
-| `backend/app/services/mongo.py` | Added `find_or_create_google_user()`. |
-| `backend/app/routers/auth.py` | Added `GET /api/auth/google/client-id` and `POST /api/auth/google`. |
-
-**Frontend changes:**
-| File | Change |
-|------|--------|
-| `frontend/index.html` | Added Google Identity Services script tag. |
-| `frontend/src/pages/Login.jsx` | Fetches client ID, renders GIS button, sends credential to backend. |
-
-**New API endpoints:**
-| Method | Endpoint | Auth | Description |
-|--------|----------|:----:|-------------|
-| GET | `/api/auth/google/client-id` | - | Returns Google Client ID |
-| POST | `/api/auth/google` | - | Verify Google credential, create/find user, return JWT |
+**Scope:** Third-party SSO was removed from the product. Login now uses email/password only.
 
 ### Phase 8 — Completed 2026-05-24
 
@@ -672,24 +652,6 @@
 
 ---
 
-### Phase 7: Google SSO ✅ COMPLETED (2026-05-21)
-
-**หมายเหตุ:** ปุ่ม Google SSO มีอยู่แล้วใน Login page แต่ยังไม่ทำงาน
-
-#### Artifact 7.1: Google OAuth Integration
-
-**Backend:**
-- `GET /api/auth/google` — redirect to Google OAuth
-- `GET /api/auth/google/callback` — handle callback, create/login user
-- Auto-create user with status "approved" (Google-verified)
-- Link Google account กับ existing account ถ้า email ตรงกัน
-
-**Frontend:**
-- ปุ่ม Google ใน Login page → redirect ไป backend OAuth URL
-- Handle callback redirect กลับมา frontend
-
----
-
 ## Implementation Priority & Dependency Map
 
 *[รายละเอียดโค้ดถูกตัดออกเพื่อความกระชับ]*
@@ -706,7 +668,7 @@
 | ~~6~~ | ~~Phase 5: Custom Prompt~~ | ~~เล็ก~~ | ✅ เสร็จแล้ว |
 | 7 | Phase 6: Profile & Settings | กลาง | Better UX |
 | ~~8~~ | ~~Phase 4: Voice Enrollment~~ | ~~ใหญ่~~ | ✅ เสร็จแล้ว |
-| ~~9~~ | ~~Phase 7: Google SSO~~ | ~~กลาง~~ | ✅ เสร็จแล้ว |
+| ~~9~~ | ~~Phase 7: Third-party SSO~~ | ~~กลาง~~ | Removed |
 | ~~10~~ | ~~Phase 8: User Activity Log~~ | ~~เล็ก-กลาง~~ | ✅ เสร็จแล้ว |
 | ~~11~~ | ~~Phase 9: PDPA Consent Management~~ | ~~กลาง~~ | ✅ เสร็จแล้ว |
 | 12 | Phase 10: Queue & Server Monitoring | กลาง | Ops visibility |
@@ -1188,8 +1150,6 @@
 |----------|-----------|---------|
 | `PII_ENCRYPTION_KEY` | Phase 3 | AES-256 master key |
 | `PII_KEY_VERSION` | Phase 3 | Key rotation version |
-| `GOOGLE_CLIENT_ID` | Phase 7 | Google OAuth |
-| `GOOGLE_CLIENT_SECRET` | Phase 7 | Google OAuth |
 | `BACKUP_RETENTION_DAYS` | Phase 11 | จำนวนวันเก็บ backup (default: 30) |
 | `BACKUP_NOTIFY_EMAIL` | Phase 11 | Email แจ้งผล backup |
 | `JWT_REFRESH_SECRET` | Phase 16 | Secret สำหรับ refresh tokens |
@@ -1208,15 +1168,13 @@
 
 5. **Key Management** — PII encryption key ต้องไม่อยู่ใน git repo. ควรใช้ vault service (HashiCorp Vault, AWS KMS) สำหรับ production.
 
-6. **Google SSO + Approval Flow** — ถ้า Google SSO user ต้องรอ approve จะเป็น UX ที่แย่. ควร auto-approve Google SSO users หรือมี separate flow.
+6. **Activity Log Volume** — ถ้า user มีจำนวนมาก activity_log จะโตเร็ว. ต้องมี TTL index (90 วัน) และ archive strategy สำหรับ compliance records ที่ต้องเก็บนานกว่า.
 
-7. **Activity Log Volume** — ถ้า user มีจำนวนมาก activity_log จะโตเร็ว. ต้องมี TTL index (90 วัน) และ archive strategy สำหรับ compliance records ที่ต้องเก็บนานกว่า.
+7. **Multilingual WhisperX** — การ auto-detect language มี accuracy ต่ำกว่าการระบุ language ตรงๆ โดยเฉพาะ Thai-English code-switching. ควร default เป็น "th" และให้ user เลือกเอง.
 
-8. **Multilingual WhisperX** — การ auto-detect language มี accuracy ต่ำกว่าการระบุ language ตรงๆ โดยเฉพาะ Thai-English code-switching. ควร default เป็น "th" และให้ user เลือกเอง.
+8. **Sub-agenda Detection Accuracy** — GPT-4.1 detect agenda boundaries อาจไม่แม่นยำสำหรับการประชุมที่ไม่เป็นทางการ. ควรเป็น optional feature และให้ user ปรับแก้ได้.
 
-9. **Sub-agenda Detection Accuracy** — GPT-4.1 detect agenda boundaries อาจไม่แม่นยำสำหรับการประชุมที่ไม่เป็นทางการ. ควรเป็น optional feature และให้ user ปรับแก้ได้.
-
-10. **Backup Restore Process** — ต้องมี runbook สำหรับ restore จาก backup — ทดสอบ restore process ก่อน production go-live.
+9. **Backup Restore Process** — ต้องมี runbook สำหรับ restore จาก backup — ทดสอบ restore process ก่อน production go-live.
 
 11. **VA Pen Test Scope** — ควรทำ pen test กับ environment ที่ใกล้เคียง production มากที่สุด รวมถึง Docker network, MinIO access controls, และ MongoDB authentication.
 

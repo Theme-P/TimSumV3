@@ -233,13 +233,16 @@ async def assign_package(
     if not pkg:
         raise HTTPException(status_code=404, detail="ไม่พบแพ็กเกจที่ระบุ")
 
-    mongo_service.assign_user_package(
-        user_id=user_id,
-        package_id=req.package_id,
-        assigned_by=str(admin.id),
-        reset_usage=req.reset_usage,
-        source="admin",
-    )
+    try:
+        mongo_service.assign_user_package(
+            user_id=user_id,
+            package_id=req.package_id,
+            assigned_by=str(admin.id),
+            reset_usage=req.reset_usage,
+            source="admin",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     mongo_service.log_activity(
         str(admin.id),
         "admin_assign_package",

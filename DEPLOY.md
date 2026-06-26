@@ -49,7 +49,6 @@ cp .env.example .env
 | `SUPERADMIN_PASS` | รหัสผ่าน superadmin | 🔒 แนะนำให้แก้ |
 | `ADMIN_PASS` | รหัสผ่าน admin | 🔒 แนะนำให้แก้ |
 | `ALLOWED_ORIGINS` | CORS origins (ถ้า deploy ขึ้น server จริง ต้องเปลี่ยน) | ❗ **ต้องแก้ ถ้า deploy จริง** |
-| `GOOGLE_CLIENT_ID` | Google OAuth Client ID (Optional — ถ้าไม่ใช้ SSO ไม่ต้องใส่) | ✅ Optional |
 | `SMTP_SERVER` | SMTP server สำหรับส่งอีเมล (Optional) | ✅ Optional |
 | `SMTP_PORT` | SMTP port เช่น 25, 465, 587 | ✅ Optional |
 | `SENDER_EMAIL` | อีเมลผู้ส่ง ถ้าใช้ SMTP ต้องใส่คู่กับ `SMTP_SERVER` | ✅ Optional |
@@ -89,18 +88,6 @@ python3 -c "import secrets; print(secrets.token_urlsafe(16))"
 | `REDIS_URL` | docker-compose สร้าง Redis URL จาก `REDIS_PASSWORD` ให้อัตโนมัติ |
 
 > ⚡ ดังนั้นแค่แก้ `MONGO_PASS` และ `REDIS_PASSWORD` ก็พอ ไม่ต้องไปยุ่งกับ connection string
-
-### 4. (Optional) เพิ่ม `GOOGLE_CLIENT_ID` ใน `.env`
-
-ถ้าต้องการ Google SSO ให้เพิ่มบรรทัดนี้ใน `.env`:
-
-```env
-GOOGLE_CLIENT_ID=your_google_client_id_here
-```
-
-ถ้าไม่ต้องการ ระบบจะ disable Google SSO อัตโนมัติ (ปลอดภัย — แค่มี warning ตอน docker-compose ที่ไม่ส่งผลต่อการทำงาน)
-
----
 
 ## 📋 Prerequisites (ความต้องการของ Server)
 
@@ -335,15 +322,6 @@ sudo docker compose -f docker-compose.yml logs mongo
 # (docker-compose.yml จะ override MONGO_CONNECTION_STRING อัตโนมัติ)
 ```
 
-### ❌ Warning: "GOOGLE_CLIENT_ID variable is not set"
-
-เป็นแค่ warning ไม่ส่งผลต่อการทำงาน — Google SSO จะถูก disable อัตโนมัติ
-ถ้าต้องการปิด warning ให้เพิ่มใน `.env`:
-
-```env
-GOOGLE_CLIENT_ID=
-```
-
 ### ❌ WhisperX model download ช้า / ล้มเหลว
 
 ครั้งแรกที่รัน Worker จะ download model ~3GB จาก Hugging Face
@@ -388,6 +366,5 @@ sudo docker compose exec backend python scripts/create_admin.py
 | Admin Stats API | ✅ ผ่าน — user count by status |
 | Packages API | ✅ ผ่าน — 4 public packages |
 | History API | ✅ ผ่าน — empty sessions (ยังไม่มีข้อมูล) |
-| Google SSO (disabled) | ✅ ผ่าน — `{"enabled":false}` |
 | Celery Worker | ✅ ผ่าน — connected to Redis, ready |
 | MinIO Storage | ✅ ผ่าน — console accessible `:9001` |

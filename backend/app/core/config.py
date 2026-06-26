@@ -1,21 +1,36 @@
 import os
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class PipelineConfig:
     """Configuration for the transcription-summary pipeline"""
     
     # Device settings
-    DEVICE = "cuda"
-    COMPUTE_TYPE = "float16"
+    DEVICE = os.environ.get("WHISPERX_DEVICE", "cuda")
+    COMPUTE_TYPE = os.environ.get("WHISPERX_COMPUTE_TYPE", "float16")
     
     # WhisperX settings
-    MODEL_NAME = "large-v3"
+    MODEL_NAME = os.environ.get("WHISPERX_MODEL", "large-v3")
     BATCH_SIZE = int(os.environ.get("WHISPERX_BATCH_SIZE", "24"))
-    LANGUAGE = None  # None = auto-detect language (supports Thai, English, mixed)
+    LANGUAGE = os.environ.get("WHISPERX_LANGUAGE") or None  # None = auto-detect language
     
     # Beam search settings
-    BEAM_SIZE = 5
-    BEST_OF = 5
-    PATIENCE = 1.5
+    BEAM_SIZE = int(os.environ.get("WHISPERX_BEAM_SIZE", "5"))
+    BEST_OF = int(os.environ.get("WHISPERX_BEST_OF", "5"))
+    PATIENCE = float(os.environ.get("WHISPERX_PATIENCE", "1.5"))
+
+    # Optional stages. Keep defaults enabled to preserve current output quality.
+    ENABLE_ALIGNMENT = _env_bool("ENABLE_ALIGNMENT", True)
+    ENABLE_SPEAKER_CLIPS = _env_bool("ENABLE_SPEAKER_CLIPS", True)
+    ENABLE_VOICE_MATCHING = _env_bool("ENABLE_VOICE_MATCHING", True)
+    ENABLE_SPEAKER_NAME_DETECTION = _env_bool("ENABLE_SPEAKER_NAME_DETECTION", True)
+    ENABLE_AGENDA_DETECTION = _env_bool("ENABLE_AGENDA_DETECTION", True)
     
     # VAD options (tuned for meeting audio with multiple speakers)
     VAD_ONSET = 0.500       # Speech start threshold (higher = less false positives)
@@ -31,16 +46,5 @@ class PipelineConfig:
     HF_TOKEN = os.environ.get("HF_TOKEN", "")
 
 
-class EmailConfig:
-    """Email configuration (optional — all fields have defaults)"""
-    SMTP_SERVER = os.environ.get("SMTP_SERVER", "")
-    SMTP_PORT = int(os.environ.get("SMTP_PORT", "25"))
-    EMAIL_USERNAME = os.environ.get("EMAIL_USERNAME", "")
-    EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD", "")
-    SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "")
-    SMTP_SECURE = os.environ.get("SMTP_SECURE", "false")
-    EMAIL_DEBUG = os.environ.get("EMAIL_DEBUG", "false").lower() == "true"
-
-    @classmethod
-    def is_configured(cls) -> bool:
-        return bool(cls.SMTP_SERVER and cls.SENDER_EMAIL)
+# EmailConfig was removed — EmailService reads env vars directly on construction.
+# See app/services/email_service.py for the authoritative SMTP configuration.

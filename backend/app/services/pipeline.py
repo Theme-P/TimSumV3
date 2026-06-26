@@ -157,62 +157,65 @@ class TranscribeSummaryPipeline:
         clear_gpu_memory()
         
         # Step 4: Align transcript (word-level timestamps for better speaker assignment)
-        logger.info("Aligning transcript (word-level timestamps)...")
-        align_start = time.time()
-        
-        # Use detected language for alignment (fallback chain: detected → en → skip)
-        align_language = detected_language or "th"
-        logger.info(f"Aligning with language: {align_language}")
-        
         alignment_success = False
-        try:
-            align_model, align_metadata = whisperx.load_align_model(
-                language_code=align_language,
-                device=self.config.DEVICE
-            )
-            result = whisperx.align(
-                result["segments"],
-                align_model,
-                align_metadata,
-                audio,
-                self.config.DEVICE,
-                return_char_alignments=False,
-            )
-            alignment_success = True
-            align_time = time.time() - align_start
-            logger.info(f"Alignment completed in {align_time:.2f}s (lang={align_language})")
-            
-            # Clear alignment model
-            del align_model
-            clear_gpu_memory()
-        except Exception as e:
-            # Fallback: try English alignment model (broader phoneme coverage)
-            if align_language != "en":
-                logger.warning(f"Alignment failed for '{align_language}', trying English fallback: {e}")
-                try:
-                    align_model, align_metadata = whisperx.load_align_model(
-                        language_code="en",
-                        device=self.config.DEVICE
-                    )
-                    result = whisperx.align(
-                        result["segments"],
-                        align_model,
-                        align_metadata,
-                        audio,
-                        self.config.DEVICE,
-                        return_char_alignments=False,
-                    )
-                    alignment_success = True
-                    align_time = time.time() - align_start
-                    logger.info(f"Alignment completed with English fallback in {align_time:.2f}s")
-                    
-                    del align_model
-                    clear_gpu_memory()
-                except Exception as e2:
-                    logger.warning(f"English fallback alignment also failed (using segment-level timestamps): {e2}")
-            else:
-                logger.warning(f"Alignment skipped (will use segment-level timestamps): {e}")
-        
+        if self.config.ENABLE_ALIGNMENT:
+            logger.info("Aligning transcript (word-level timestamps)...")
+            align_start = time.time()
+
+            # Use detected language for alignment (fallback chain: detected -> en -> skip)
+            align_language = detected_language or "th"
+            logger.info(f"Aligning with language: {align_language}")
+
+            try:
+                align_model, align_metadata = whisperx.load_align_model(
+                    language_code=align_language,
+                    device=self.config.DEVICE
+                )
+                result = whisperx.align(
+                    result["segments"],
+                    align_model,
+                    align_metadata,
+                    audio,
+                    self.config.DEVICE,
+                    return_char_alignments=False,
+                )
+                alignment_success = True
+                align_time = time.time() - align_start
+                logger.info(f"Alignment completed in {align_time:.2f}s (lang={align_language})")
+
+                # Clear alignment model
+                del align_model
+                clear_gpu_memory()
+            except Exception as e:
+                # Fallback: try English alignment model (broader phoneme coverage)
+                if align_language != "en":
+                    logger.warning(f"Alignment failed for '{align_language}', trying English fallback: {e}")
+                    try:
+                        align_model, align_metadata = whisperx.load_align_model(
+                            language_code="en",
+                            device=self.config.DEVICE
+                        )
+                        result = whisperx.align(
+                            result["segments"],
+                            align_model,
+                            align_metadata,
+                            audio,
+                            self.config.DEVICE,
+                            return_char_alignments=False,
+                        )
+                        alignment_success = True
+                        align_time = time.time() - align_start
+                        logger.info(f"Alignment completed with English fallback in {align_time:.2f}s")
+
+                        del align_model
+                        clear_gpu_memory()
+                    except Exception as e2:
+                        logger.warning(f"English fallback alignment also failed (using segment-level timestamps): {e2}")
+                else:
+                    logger.warning(f"Alignment skipped (will use segment-level timestamps): {e}")
+        else:
+            logger.info("Alignment disabled by ENABLE_ALIGNMENT=false")
+
         if not alignment_success:
             align_time = 0
         
@@ -277,21 +280,28 @@ class TranscribeSummaryPipeline:
         speaker_labels = list(speakers_time.keys())
         
         # Step 4: Extract audio clips per speaker (~10s each)
-        logger.info("Extracting speaker audio clips...")
-        clip_start = time.time()
-        clip_dir = tempfile.mkdtemp(prefix="speaker_clips_")
-        speaker_clips = extract_speaker_clips(
-            audio_file=audio_file,
-            segments=segments,
-            clip_dir=clip_dir,
-            target_duration=10.0
-        )
-        clip_time = time.time() - clip_start
-        logger.info(f"Clip extraction completed in {clip_time:.2f}s")
+        clip_dir = ""
+        speaker_clips = {}
+        clip_time = 0
+        if self.config.ENABLE_SPEAKER_CLIPS:
+            logger.info("Extracting speaker audio clips...")
+            clip_start = time.time()
+            clip_parent_dir = os.path.dirname(audio_file) or None
+            clip_dir = tempfile.mkdtemp(prefix="speaker_clips_", dir=clip_parent_dir)
+            speaker_clips = extract_speaker_clips(
+                audio_file=audio_file,
+                segments=segments,
+                clip_dir=clip_dir,
+                target_duration=10.0
+            )
+            clip_time = time.time() - clip_start
+            logger.info(f"Clip extraction completed in {clip_time:.2f}s")
+        else:
+            logger.info("Speaker clip extraction disabled by ENABLE_SPEAKER_CLIPS=false")
         
         # Step: Voice enrollment matching (if voice samples provided)
         voice_matches = {}
-        if voice_samples:
+        if voice_samples and self.config.ENABLE_VOICE_MATCHING:
             logger.info(f"Attempting voice matching with {len(voice_samples)} enrolled samples...")
             voice_match_start = time.time()
             try:
@@ -329,16 +339,20 @@ class TranscribeSummaryPipeline:
             logger.info(f"Voice matching completed in {voice_match_time:.2f}s")
         else:
             voice_match_time = 0
+            if voice_samples:
+                logger.info("Voice matching disabled by ENABLE_VOICE_MATCHING=false")
 
         # Step: Detect speaker names from self-introductions
         # Only detect for speakers NOT already matched by voice enrollment
-        logger.info("Detecting speaker names from introductions...")
         detect_start = time.time()
         unmatched_labels = [s for s in speaker_labels if s not in voice_matches]
-        if unmatched_labels:
+        if unmatched_labels and self.config.ENABLE_SPEAKER_NAME_DETECTION:
+            logger.info("Detecting speaker names from introductions...")
             suggested_names = detect_speaker_names(transcript_with_speakers, unmatched_labels)
         else:
             suggested_names = {}
+            if unmatched_labels:
+                logger.info("Speaker name detection disabled by ENABLE_SPEAKER_NAME_DETECTION=false")
         detect_time = time.time() - detect_start
 
         # Merge voice matches into suggested_names (voice matches take priority)
@@ -362,13 +376,18 @@ class TranscribeSummaryPipeline:
         
         # Step: Agenda detection (automatic — runs on every transcript)
         _report("detecting_agendas", 70)
-        logger.info("Detecting agenda/topic boundaries...")
-        agenda_start = time.time()
-        agenda_result = detect_agendas(
-            segments=segments,
-            meeting_type_id=meeting_type_id,
-        )
-        agenda_time = time.time() - agenda_start
+        agenda_result = {"agendas": [], "detection_mode": "single_topic"}
+        agenda_time = 0
+        if self.config.ENABLE_AGENDA_DETECTION:
+            logger.info("Detecting agenda/topic boundaries...")
+            agenda_start = time.time()
+            agenda_result = detect_agendas(
+                segments=segments,
+                meeting_type_id=meeting_type_id,
+            )
+            agenda_time = time.time() - agenda_start
+        else:
+            logger.info("Agenda detection disabled by ENABLE_AGENDA_DETECTION=false")
         detected_agendas = agenda_result.get("agendas", [])
         detection_mode = agenda_result.get("detection_mode", "single_topic")
         logger.info(

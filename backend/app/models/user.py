@@ -34,7 +34,6 @@ class User(BaseModel):
     registered_at: Optional[datetime] = None
     approved_at: Optional[datetime] = None
     approved_by: Optional[str] = None  # admin user_id who approved
-    google_id: Optional[str] = None  # Google sub (subject) ID for SSO users
 
     model_config = ConfigDict(
         arbitrary_types_allowed=True,

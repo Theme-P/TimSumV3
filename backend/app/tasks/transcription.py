@@ -26,6 +26,12 @@ from app.utils.export import export_transcript_to_docx, export_summary_to_docx
 from app.models.meeting import MEETING_TYPES
 
 
+TASK_MAX_RETRIES = int(os.getenv("TRANSCRIBE_MAX_RETRIES", "2"))
+TASK_RETRY_DELAY_SECONDS = int(os.getenv("TRANSCRIBE_RETRY_DELAY_SECONDS", "60"))
+TASK_SOFT_TIME_LIMIT_SECONDS = int(os.getenv("TRANSCRIBE_SOFT_TIME_LIMIT_SECONDS", "1800"))
+TASK_TIME_LIMIT_SECONDS = int(os.getenv("TRANSCRIBE_TIME_LIMIT_SECONDS", "2100"))
+
+
 def _get_storage() -> StorageService:
     """Get MinIO connection for the worker process."""
     return StorageService()
@@ -34,6 +40,38 @@ def _get_storage() -> StorageService:
 def _update_job(db, job_id: str, update: dict):
     """Update job document in MongoDB."""
     db.job.update_one({"_id": ObjectId(job_id)}, {"$set": update})
+
+
+def _refund_job_quota_once(db, job_id: str) -> bool:
+    """Refund a job's reserved package quota once."""
+    job = db.job.find_one_and_update(
+        {
+            "_id": ObjectId(job_id),
+            "quota_reserved": True,
+            "quota_refunded": {"$ne": True},
+        },
+        {"$set": {"quota_refunded": True}},
+    )
+    if not job:
+        return False
+
+    minutes = max(float(job.get("quota_minutes") or 0), 0)
+    db.user_package.update_one(
+        {"user_id": job["user_id"]},
+        {"$inc": {
+            "usage.files_this_month": -1,
+            "usage.ai_summaries_this_month": -1,
+            "usage.transcription_minutes_this_month": -minutes,
+        }},
+    )
+    try:
+        import redis
+        broker_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+        cache_url = broker_url.rsplit("/", 1)[0] + "/1"
+        redis.from_url(cache_url, decode_responses=True).delete(f"user_pkg:{job['user_id']}")
+    except Exception:
+        pass
+    return True
 
 
 def _auto_send_result_email(
@@ -146,10 +184,10 @@ def _auto_send_result_email(
 @celery_app.task(
     bind=True,
     name="transcription.process_audio",
-    max_retries=2,
-    default_retry_delay=60,
-    soft_time_limit=1800,   # 30 min soft limit
-    time_limit=2100,        # 35 min hard limit
+    max_retries=TASK_MAX_RETRIES,
+    default_retry_delay=TASK_RETRY_DELAY_SECONDS,
+    soft_time_limit=TASK_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=TASK_TIME_LIMIT_SECONDS,
 )
 def process_audio(
     self,
@@ -177,12 +215,23 @@ def process_audio(
     temp_dir = tempfile.mkdtemp(prefix="timsumv3_worker_")
 
     try:
+        started_at = datetime.now(timezone.utc)
+        queue_wait_seconds = None
+        job_doc = db.job.find_one({"_id": ObjectId(job_id)}, {"created_at": 1})
+        created_at = job_doc.get("created_at") if job_doc else None
+        if created_at:
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            queue_wait_seconds = max((started_at - created_at).total_seconds(), 0)
+
         # Mark job as processing
         _update_job(db, job_id, {
             "status": "processing",
             "current_step": "model_load",
             "progress": 5,
             "celery_task_id": self.request.id,
+            "started_at": started_at,
+            "queue_wait_seconds": queue_wait_seconds,
         })
 
         # Download audio from MinIO to temp file
@@ -321,6 +370,10 @@ def process_audio(
             logger.info(f"Job {job_id} retrying ({self.request.retries + 1}/{self.max_retries})")
             _update_job(db, job_id, {"status": "queued", "current_step": "retry", "error": None})
             raise self.retry(exc=exc)
+        try:
+            _refund_job_quota_once(db, job_id)
+        except Exception as refund_exc:
+            logger.warning(f"Job {job_id}: quota refund failed after task failure: {refund_exc}")
         raise
 
     finally:

@@ -57,6 +57,7 @@ function MainApp() {
     const dropdownRef = useRef(null)
     const resultLoadedRef = useRef(false)
     const pollTimeoutRef = useRef(null)
+    const pollErrorCountRef = useRef(0)
 
     const { token, logout } = useAuth()
     const userInfo = token ? getUserInfo(token) : { initials: 'ผู้', username: '', email: '' }
@@ -149,6 +150,7 @@ function MainApp() {
             })
             if (!res.ok) throw new Error('Failed to fetch job status')
             const job = await res.json()
+            pollErrorCountRef.current = 0
 
             setProgress(job.progress || 0)
             setCurrentStep(STEP_MAP[job.current_step] ?? 0)
@@ -183,6 +185,14 @@ function MainApp() {
                 pollTimeoutRef.current = setTimeout(() => pollJobStatus(jobId), 3000)
             }
         } catch (err) {
+            if (pollErrorCountRef.current < 3) {
+                pollErrorCountRef.current += 1
+                pollTimeoutRef.current = setTimeout(
+                    () => pollJobStatus(jobId),
+                    1500 * pollErrorCountRef.current,
+                )
+                return
+            }
             setError(err.message || 'เกิดข้อผิดพลาดในการติดตามสถานะ')
             setIsProcessing(false)
         }
@@ -202,6 +212,7 @@ function MainApp() {
         setAutoEmailError(null)
         setEmailStatus(null)
         resultLoadedRef.current = false
+        pollErrorCountRef.current = 0
         if (pollTimeoutRef.current) {
             clearTimeout(pollTimeoutRef.current)
             pollTimeoutRef.current = null
@@ -528,6 +539,7 @@ function MainApp() {
                                 <SpeakerIdentification
                                     result={result}
                                     sessionId={sessionId}
+                                    token={token}
                                     onMappingChange={handleMappingChange}
                                     isCollapsed={speakerPanelCollapsed}
                                     onToggleCollapse={() => setSpeakerPanelCollapsed(prev => !prev)}

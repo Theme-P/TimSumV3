@@ -11,7 +11,7 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Depends, Req
 from fastapi.responses import FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List
 from io import BytesIO
 from dotenv import load_dotenv
@@ -119,22 +119,32 @@ def _probe_audio_duration_seconds(file_path: str) -> float:
 
 
 # Enable CORS for frontend (whitelist from env)
-_allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
-allowed_origins = [o.strip() for o in _allowed_origins.split(",")]
+_default_allowed_origins = ",".join([
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+])
+_default_allowed_origin_regex = (
+    r"^https?://("
+    r"(localhost|127\.0\.0\.1)(:\d+)?|"
+    r"10\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?|"
+    r"192\.168\.\d{1,3}\.\d{1,3}(:\d+)?|"
+    r"172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}(:\d+)?|"
+    r"[A-Za-z0-9-]+\.local(:\d+)?"
+    r")$"
+)
+_allowed_origins = os.getenv("ALLOWED_ORIGINS", _default_allowed_origins)
+allowed_origins = [o.strip() for o in _allowed_origins.split(",") if o.strip()]
+allowed_origin_regex = os.getenv("ALLOWED_ORIGIN_REGEX", _default_allowed_origin_regex) or None
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=allowed_origin_regex,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
-
-# Initialize Services
-cache_service = CacheService()
-mongo_uri = os.getenv("MONGO_CONNECTION_STRING", "mongodb://localhost:27017")
-mongo_db = os.getenv("MONGO_DB_NAME", "timsumv3")
-app.state.mongo_service = MongoService(uri=mongo_uri, db_name=mongo_db, cache=cache_service)
-app.state.storage_service = get_storage_service()
 
 # Include Routers
 app.include_router(auth_router)
@@ -196,8 +206,6 @@ def _ensure_default_users():
         except Exception as e:
             print(f"⚠️ Could not auto-create {cfg['role']}: {e}")
 
-_ensure_default_users()
-
 def _seed_meeting_templates():
     """Seed default meeting templates into the database if missing."""
     from app.models.meeting_template import get_default_meeting_templates
@@ -209,9 +217,6 @@ def _seed_meeting_templates():
         if not existing:
             mongo.update_meeting_template(template["meeting_type_id"], template)
 
-_seed_meeting_templates()
-
-
 def _seed_llm_config():
     """Seed default LLM runtime config if missing."""
     from app.models.llm_config import get_default_llm_config
@@ -221,10 +226,6 @@ def _seed_llm_config():
     if not mongo.get_llm_config(default_config["name"]):
         mongo.upsert_llm_config(default_config["name"], default_config)
         print("✅ Seeded default LLM config")
-
-
-_seed_llm_config()
-
 
 def _migrate_meeting_templates_multilingual():
     """One-time migration: update all meeting templates with multilingual-aware prompts.
@@ -251,10 +252,6 @@ def _migrate_meeting_templates_multilingual():
             updated_count += 1
     if updated_count > 0:
         print(f"✅ Migrated {updated_count} meeting template(s): added multilingual Thai-summary rule")
-
-_migrate_meeting_templates_multilingual()
-
-
 # ── Migrate legacy users: add status field if missing ──
 def _migrate_users_status():
     mongo = app.state.mongo_service
@@ -264,10 +261,6 @@ def _migrate_users_status():
     )
     if result.modified_count > 0:
         print(f"✅ Migrated {result.modified_count} legacy user(s): added status='approved'")
-
-_migrate_users_status()
-
-
 # ── Seed default packages & assign to default users ──
 def _seed_packages():
     from app.models.package import DEFAULT_PACKAGES, ADMIN_PACKAGE, SUPERADMIN_PACKAGE
@@ -300,7 +293,28 @@ def _seed_packages():
             mongo.assign_user_package(str(user.id), pkg["_id"], assigned_by="system")
             print(f"✅ Assigned {pkg_name} to {email}")
 
-_seed_packages()
+
+@app.on_event("startup")
+def _startup_initialize_services():
+    """Initialize external services and run idempotent startup seeds/migrations."""
+    if getattr(app.state, "services_initialized", False):
+        return
+
+    cache_service = CacheService()
+    mongo_uri = os.getenv("MONGO_CONNECTION_STRING", "mongodb://localhost:27017")
+    mongo_db = os.getenv("MONGO_DB_NAME", "timsumv3")
+    app.state.mongo_service = MongoService(uri=mongo_uri, db_name=mongo_db, cache=cache_service)
+    app.state.storage_service = get_storage_service()
+    app.state.email_service = EmailService()
+
+    _ensure_default_users()
+    _seed_meeting_templates()
+    _seed_llm_config()
+    _migrate_meeting_templates_multilingual()
+    _migrate_users_status()
+    _seed_packages()
+
+    app.state.services_initialized = True
 
 # ===================== RESPONSE MODELS =====================
 
@@ -473,6 +487,7 @@ async def transcribe_summarize(
             meeting_type_id=meeting_type_id,
             audio_path=object_name,
             email_recipient=email_recipient,
+            quota_minutes=duration_minutes,
         )
 
         # Fetch voice samples if voice matching is enabled
@@ -495,7 +510,10 @@ async def transcribe_summarize(
         )
     except HTTPException:
         if quota_reserved:
-            mongo_service.refund_upload_quota(str(user.id), duration_minutes)
+            if job_id:
+                mongo_service.refund_job_quota_once(job_id)
+            else:
+                mongo_service.refund_upload_quota(str(user.id), duration_minutes)
         if object_uploaded:
             try:
                 storage.delete_object(BUCKET_AUDIO, object_name)
@@ -504,7 +522,10 @@ async def transcribe_summarize(
         raise
     except Exception as e:
         if quota_reserved:
-            mongo_service.refund_upload_quota(str(user.id), duration_minutes)
+            if job_id:
+                mongo_service.refund_job_quota_once(job_id)
+            else:
+                mongo_service.refund_upload_quota(str(user.id), duration_minutes)
         if object_uploaded:
             try:
                 storage.delete_object(BUCKET_AUDIO, object_name)
@@ -692,14 +713,26 @@ class EmailResultsRequest(BaseModel):
     meeting_type_id: int = 0
     agendas: List[dict] = Field(default_factory=list)
 
+    @field_validator("recipient_email")
+    @classmethod
+    def validate_recipient_email(cls, v: str) -> str:
+        v = v.strip()
+        if not v or "@" not in v or "." not in v.split("@")[-1]:
+            raise ValueError("รูปแบบอีเมลผู้รับไม่ถูกต้อง")
+        return v
+
 
 @app.post("/api/email-results")
-async def email_results(request: EmailResultsRequest, _user: UserData = Depends(get_current_user)):
+async def email_results(
+    request: EmailResultsRequest,
+    req: Request,
+    _user: UserData = Depends(get_current_user),
+):
     """
     Generate DOCX files and send them via email.
     Requires SMTP configuration in .env
     """
-    email_svc = EmailService()
+    email_svc: EmailService = req.app.state.email_service
     if not email_svc.is_configured:
         raise HTTPException(status_code=503, detail="Email service not configured. Set SMTP_SERVER and SENDER_EMAIL in .env")
 

@@ -238,7 +238,7 @@ sudo docker compose -f docker-compose.yml up -d
 
 | Phase | Feature | Status | Priority |
 |:-----:|---------|:------:|:--------:|
-| 1-7 | Auth, Package, Profile, Custom Prompt, Google SSO | ✅ Done | - |
+| 1-7 | Auth, Package, Profile, Custom Prompt | ✅ Done | - |
 | 12 | Admin Dashboard Enhancement (Analytics, Package CRUD) | ✅ Done | - |
 | 3.2 | PDPA — PII Encryption at Rest | 🔴 Todo | สูง |
 | 9 | PDPA Consent & Data Rights | 🔴 Todo | สูง |

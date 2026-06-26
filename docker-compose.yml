@@ -69,7 +69,7 @@ services:
     container_name: timsumv3-backend
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     env_file:
       - .env
     environment:
@@ -79,7 +79,6 @@ services:
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_USER}
       - MINIO_SECRET_KEY=${MINIO_PASS}
-      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
     depends_on:
       redis:
         condition: service_healthy
@@ -87,7 +86,7 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    command: uvicorn api:app --host 0.0.0.0 --port 8000 --workers 2
+    command: uvicorn api:app --host 0.0.0.0 --port 8000 --workers 1
     networks:
       - app-network
     mem_limit: 4g
@@ -125,7 +124,7 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    command: celery -A app.celery_app:celery_app worker --loglevel=info --concurrency=1 --pool=solo
+    command: celery -A app.celery_app:celery_app worker --loglevel=info --concurrency=${CELERY_WORKER_CONCURRENCY:-1} --pool=solo
     networks:
       - app-network
     mem_limit: 16g
