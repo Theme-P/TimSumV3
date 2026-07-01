@@ -1188,6 +1188,63 @@ class MongoService:
         except Exception:
             pass  # activity log must never break the main flow
 
+    @staticmethod
+    def _missing_user_identity(user_id) -> dict:
+        user_id = str(user_id or "")
+        return {
+            "id": user_id,
+            "display_name": "บัญชีที่ถูกลบ" if user_id else "ระบบ",
+            "username": "",
+            "email": "",
+            "organization": "",
+            "missing": bool(user_id),
+        }
+
+    def _get_user_identity_map(self, user_ids) -> dict[str, dict]:
+        """Resolve user IDs to compact, decrypted identities for admin monitoring."""
+        object_ids = []
+        for user_id in {str(value) for value in user_ids if value}:
+            object_id = self._object_id(user_id)
+            if object_id is not None:
+                object_ids.append(object_id)
+
+        identities = {}
+        if not object_ids:
+            return identities
+
+        projection = {
+            "username": 1,
+            "email": 1,
+            "first_name": 1,
+            "last_name": 1,
+            "organization": 1,
+        }
+        for encrypted_doc in self.db.user.find({"_id": {"$in": object_ids}}, projection):
+            user_id = str(encrypted_doc["_id"])
+            try:
+                doc = self._decrypt_user_document(encrypted_doc)
+            except Exception as exc:
+                logger.warning("Could not resolve monitoring identity for user %s: %s", user_id, exc)
+                continue
+
+            full_name = " ".join(
+                value.strip()
+                for value in (doc.get("first_name"), doc.get("last_name"))
+                if isinstance(value, str) and value.strip()
+            )
+            username = doc.get("username") if isinstance(doc.get("username"), str) else ""
+            email = doc.get("email") if isinstance(doc.get("email"), str) else ""
+            organization = doc.get("organization") if isinstance(doc.get("organization"), str) else ""
+            identities[user_id] = {
+                "id": user_id,
+                "display_name": full_name or username or email or "ไม่ระบุชื่อผู้ใช้",
+                "username": username,
+                "email": email,
+                "organization": organization,
+                "missing": False,
+            }
+        return identities
+
     def get_activity_logs(self, user_id: str = None, action: str = None,
                           limit: int = 100, offset: int = 0) -> list:
         """Get activity logs with optional filters. Returns newest-first."""
@@ -1203,12 +1260,18 @@ class MongoService:
             .skip(offset)
             .limit(limit)
         )
-        logs = []
-        for doc in cursor:
+        logs = list(cursor)
+        identities = self._get_user_identity_map(doc.get("user_id") for doc in logs)
+        for doc in logs:
             doc["_id"] = str(doc["_id"])
+            user_id_value = str(doc.get("user_id") or "")
+            doc["user_id"] = user_id_value
+            doc["user"] = identities.get(
+                user_id_value,
+                self._missing_user_identity(user_id_value),
+            )
             if doc.get("timestamp"):
                 doc["timestamp"] = doc["timestamp"].isoformat()
-            logs.append(doc)
         return logs
 
     def count_activity_logs(self, user_id: str = None, action: str = None) -> int:
@@ -1295,6 +1358,7 @@ class MongoService:
         for doc in self.db.job.aggregate(pipeline):
             if doc["_id"] in counts:
                 counts[doc["_id"]] = doc["count"]
+        counts["total"] = sum(counts.values())
         today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         counts["completed_today"] = self.db.job.count_documents({
             "status": "completed",
@@ -1302,26 +1366,71 @@ class MongoService:
         })
         return counts
 
-    def get_all_jobs(self, status: str = None, limit: int = 50, offset: int = 0) -> list:
-        """List all jobs for admin view, newest first, excluding heavy result payloads."""
+    def _job_monitor_query(self, status: str = None, user_id: str = None) -> dict:
         query = {}
         if status:
             query["status"] = status
+        if user_id:
+            user_object_id = self._object_id(user_id)
+            query["user_id"] = (
+                {"$in": [user_object_id, str(user_id)]}
+                if user_object_id is not None
+                else str(user_id)
+            )
+        return query
+
+    def get_all_jobs(
+        self,
+        status: str = None,
+        user_id: str = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list:
+        """List all jobs for admin view, newest first, excluding heavy result payloads."""
+        query = self._job_monitor_query(status=status, user_id=user_id)
         cursor = (
             self.db.job.find(query, {"result": 0})
             .sort("created_at", -1)
             .skip(offset)
             .limit(limit)
         )
-        jobs = []
-        for doc in cursor:
+        jobs = list(cursor)
+        identities = self._get_user_identity_map(doc.get("user_id") for doc in jobs)
+        for doc in jobs:
             doc["_id"] = str(doc["_id"])
-            doc["user_id"] = str(doc["user_id"])
-            for ts_field in ("created_at", "completed_at", "email_sent_at"):
+            user_id_value = str(doc.get("user_id") or "")
+            doc["user_id"] = user_id_value
+            doc["user"] = identities.get(
+                user_id_value,
+                self._missing_user_identity(user_id_value),
+            )
+            for ts_field in ("created_at", "started_at", "completed_at", "email_sent_at"):
                 if doc.get(ts_field):
                     doc[ts_field] = doc[ts_field].isoformat()
-            jobs.append(doc)
         return jobs
+
+    def count_jobs(self, status: str = None, user_id: str = None) -> int:
+        """Count jobs matching the admin monitoring filters."""
+        return self.db.job.count_documents(
+            self._job_monitor_query(status=status, user_id=user_id)
+        )
+
+    def get_job_filter_users(self) -> list:
+        """Return users that own at least one job, sorted for the monitoring filter."""
+        user_ids = list(dict.fromkeys(
+            str(user_id)
+            for user_id in self.db.job.distinct("user_id")
+            if user_id
+        ))
+        identities = self._get_user_identity_map(user_ids)
+        users = [
+            identities.get(user_id, self._missing_user_identity(user_id))
+            for user_id in user_ids
+        ]
+        return sorted(
+            users,
+            key=lambda user: (user["display_name"].casefold(), user["email"].casefold()),
+        )
 
     # ── LLM Config ──
     def get_all_llm_configs(self) -> list:

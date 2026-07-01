@@ -3052,3 +3052,241 @@ body {
 @keyframes ui-icon-spin {
     to { transform: rotate(360deg); }
 }
+
+/* ===================== Admin Monitoring ===================== */
+.monitor-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.monitor-stat-card {
+  min-height: 92px;
+  padding: 0.85rem 1rem;
+  text-align: left;
+  font-family: var(--font-thai);
+  color: var(--text-primary);
+  background: var(--surface-elevated);
+  border: 1.5px solid var(--border-color);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.monitor-stat-card:hover {
+  border-color: var(--monitor-status-color);
+  transform: translateY(-1px);
+}
+
+.monitor-stat-card.active {
+  border-color: var(--monitor-status-color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--monitor-status-color) 20%, transparent);
+}
+
+.monitor-stat-card strong,
+.monitor-stat-card span,
+.monitor-stat-card small {
+  display: block;
+}
+
+.monitor-stat-card strong {
+  color: var(--monitor-status-color);
+  font-size: 1.6rem;
+  line-height: 1.1;
+}
+
+.monitor-stat-card span {
+  margin-top: 0.3rem;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.monitor-stat-card small {
+  margin-top: 0.15rem;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.monitor-filter-bar {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.85fr) minmax(230px, 1.4fr) auto auto;
+  align-items: end;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  padding: 0.8rem;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+}
+
+.monitor-filter-bar label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.monitor-filter-bar select {
+  width: 100%;
+  min-height: 38px;
+  padding: 0.45rem 2rem 0.45rem 0.65rem;
+  font-family: var(--font-thai);
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+
+.monitor-filter-bar select:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent-primary) 35%, transparent);
+  border-color: var(--accent-primary);
+}
+
+.monitor-filter-reset,
+.monitor-cancel-button {
+  padding: 0.45rem 0.7rem;
+  font-family: var(--font-thai);
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: transparent;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.monitor-filter-reset {
+  min-height: 38px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+}
+
+.monitor-filter-reset:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.monitor-filter-count {
+  align-self: center;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.monitor-table-scroll {
+  overflow-x: auto;
+  padding-bottom: 0.25rem;
+}
+
+.monitor-table {
+  display: flex;
+  min-width: 900px;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.monitor-table.activity-table {
+  min-width: 720px;
+}
+
+.monitor-table-row {
+  display: grid;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem 0.8rem;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+
+.monitor-table-row:hover:not(.monitor-table-header) {
+  border-color: var(--border-color);
+  background: var(--surface-hover);
+}
+
+.monitor-table-header {
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.queue-grid {
+  grid-template-columns: minmax(180px, 2fr) minmax(210px, 1.5fr) minmax(150px, 1fr) minmax(145px, 1.15fr) 78px;
+}
+
+.activity-grid {
+  grid-template-columns: minmax(220px, 1.4fr) minmax(260px, 2fr) minmax(150px, 1fr);
+}
+
+.monitor-user,
+.monitor-process {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.monitor-user strong,
+.monitor-user small,
+.monitor-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitor-user strong {
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+.monitor-user small,
+.monitor-process small,
+.monitor-time {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.monitor-process strong {
+  font-size: 0.78rem;
+}
+
+.monitor-time-right {
+  text-align: right;
+}
+
+.monitor-row-action {
+  text-align: right;
+}
+
+.monitor-cancel-button {
+  color: var(--error);
+  border: 1px solid var(--error);
+}
+
+.monitor-cancel-button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+@media (max-width: 768px) {
+  .monitor-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .monitor-filter-bar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .monitor-filter-count {
+    justify-self: start;
+  }
+}

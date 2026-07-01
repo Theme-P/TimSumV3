@@ -6,6 +6,41 @@ import Icon from '../components/ui/Icon';
 
 const API_BASE = '/api';
 
+const QUEUE_STATUS_OPTIONS = [
+    { key: 'all', label: 'ทั้งหมด', statKey: 'total', color: '#6b7280' },
+    { key: 'queued', label: 'รอดำเนินการ', statKey: 'queued', color: '#c68a19' },
+    { key: 'processing', label: 'กำลังประมวลผล', statKey: 'processing', color: '#2563eb' },
+    { key: 'completed', label: 'สำเร็จ', statKey: 'completed', color: '#2d8a4e' },
+    { key: 'failed', label: 'ล้มเหลว', statKey: 'failed', color: '#c0392b' },
+    { key: 'cancelled', label: 'ยกเลิกแล้ว', statKey: 'cancelled', color: '#7f8c8d' },
+];
+
+const QUEUE_STATUS_LABELS = Object.fromEntries(
+    QUEUE_STATUS_OPTIONS.filter(option => option.key !== 'all')
+        .map(option => [option.key, option.label]),
+);
+
+const PROCESS_STEP_LABELS = {
+    queued: 'รอ Worker รับงาน',
+    loading_model: 'โหลดโมเดล',
+    loading_audio: 'โหลดไฟล์เสียง',
+    transcribing: 'ถอดเสียง',
+    diarizing: 'แยกผู้พูด',
+    summarizing: 'สรุปการประชุม',
+    completed: 'เสร็จสมบูรณ์',
+};
+
+function UserIdentity({ user, userId }) {
+    const displayName = user?.display_name || 'ไม่พบข้อมูลผู้ใช้';
+    const secondary = user?.email || user?.username || (userId ? `ID: ${userId}` : '—');
+    return (
+        <span className="monitor-user" title={userId ? `User ID: ${userId}` : undefined}>
+            <strong>{displayName}</strong>
+            <small>{secondary}</small>
+        </span>
+    );
+}
+
 function getUserInfo(token) {
     try {
         const payload = JSON.parse(atob(token.split('.')[1]));
@@ -36,6 +71,10 @@ function AdminMonitoring() {
     // Queue state
     const [queueStats, setQueueStats] = useState(null);
     const [queueJobs, setQueueJobs] = useState([]);
+    const [queueUsers, setQueueUsers] = useState([]);
+    const [queueTotal, setQueueTotal] = useState(0);
+    const [queueStatusFilter, setQueueStatusFilter] = useState('all');
+    const [queueUserFilter, setQueueUserFilter] = useState('all');
     const [queueLoading, setQueueLoading] = useState(false);
     const [cancellingJob, setCancellingJob] = useState(null);
     const [notice, setNotice] = useState(null);
@@ -93,9 +132,12 @@ function AdminMonitoring() {
     const fetchQueueData = useCallback(async () => {
         setQueueLoading(true);
         try {
+            const params = new URLSearchParams({ limit: '100' });
+            if (queueStatusFilter !== 'all') params.set('status', queueStatusFilter);
+            if (queueUserFilter !== 'all') params.set('user_id', queueUserFilter);
             const [statsRes, tasksRes] = await Promise.all([
                 fetch(`${API_BASE}/admin/queue/stats`, { headers }),
-                fetch(`${API_BASE}/admin/queue/tasks?limit=50`, { headers }),
+                fetch(`${API_BASE}/admin/queue/tasks?${params.toString()}`, { headers }),
             ]);
             const statsData = await statsRes.json();
             const tasksData = await tasksRes.json();
@@ -107,12 +149,14 @@ function AdminMonitoring() {
             }
             setQueueStats(statsData.stats || null);
             setQueueJobs(tasksData.jobs || []);
+            setQueueUsers(tasksData.users || []);
+            setQueueTotal(tasksData.total ?? tasksData.count ?? 0);
         } catch (err) {
             setNotice({ type: 'error', text: err.message });
         } finally {
             setQueueLoading(false);
         }
-    }, [headers]);
+    }, [headers, queueStatusFilter, queueUserFilter]);
 
     const handleCancelJob = async (jobId) => {
         if (!window.confirm('ยืนยันการยกเลิกงานนี้?')) return;
@@ -231,82 +275,133 @@ function AdminMonitoring() {
                     <div>
                         {/* Queue Stats */}
                         {queueStats && (
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px,1fr))', gap: '0.75rem', marginBottom: '1.25rem' }}>
-                                {[
-                                    { label: 'รอดำเนินการ', value: queueStats.queued, color: '#c68a19' },
-                                    { label: 'กำลังประมวลผล', value: queueStats.processing, color: '#2563eb' },
-                                    { label: 'สำเร็จวันนี้', value: queueStats.completed_today, color: '#2d8a4e' },
-                                    { label: 'ล้มเหลว', value: queueStats.failed, color: '#c0392b' },
-                                    { label: 'ยกเลิกแล้ว', value: queueStats.cancelled, color: '#7f8c8d' },
-                                ].map(s => (
-                                    <div key={s.label} style={{
-                                        background: 'var(--surface-elevated)', border: `1.5px solid var(--border-color)`,
-                                        borderRadius: 12, padding: '0.85rem 1rem',
-                                    }}>
-                                        <div style={{ fontSize: '1.6rem', fontWeight: 700, color: s.color }}>{s.value}</div>
-                                        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: 2 }}>{s.label}</div>
-                                    </div>
+                            <div className="monitor-stat-grid">
+                                {QUEUE_STATUS_OPTIONS.map(option => (
+                                    <button
+                                        key={option.key}
+                                        type="button"
+                                        className={`monitor-stat-card ${queueStatusFilter === option.key ? 'active' : ''}`}
+                                        style={{ '--monitor-status-color': option.color }}
+                                        onClick={() => setQueueStatusFilter(option.key)}
+                                        aria-pressed={queueStatusFilter === option.key}
+                                    >
+                                        <strong>
+                                            {option.key === 'all'
+                                                ? queueStats.total ?? ['queued', 'processing', 'completed', 'failed', 'cancelled']
+                                                    .reduce((sum, key) => sum + (queueStats[key] || 0), 0)
+                                                : queueStats[option.statKey] || 0}
+                                        </strong>
+                                        <span>{option.label}</span>
+                                        {option.key === 'completed' && (
+                                            <small>วันนี้ {queueStats.completed_today || 0}</small>
+                                        )}
+                                    </button>
                                 ))}
                             </div>
                         )}
+
+                        <div className="monitor-filter-bar">
+                            <label>
+                                <span>สถานะ Process</span>
+                                <select
+                                    value={queueStatusFilter}
+                                    onChange={event => setQueueStatusFilter(event.target.value)}
+                                >
+                                    {QUEUE_STATUS_OPTIONS.map(option => (
+                                        <option key={option.key} value={option.key}>{option.label}</option>
+                                    ))}
+                                </select>
+                            </label>
+                            <label>
+                                <span>ผู้ใช้งาน</span>
+                                <select
+                                    value={queueUserFilter}
+                                    onChange={event => setQueueUserFilter(event.target.value)}
+                                >
+                                    <option value="all">ผู้ใช้ทั้งหมด</option>
+                                    {queueUsers.map(user => (
+                                        <option key={user.id} value={user.id}>
+                                            {user.display_name}{user.email ? ` — ${user.email}` : ''}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                            <button
+                                type="button"
+                                className="monitor-filter-reset"
+                                onClick={() => {
+                                    setQueueStatusFilter('all');
+                                    setQueueUserFilter('all');
+                                }}
+                                disabled={queueStatusFilter === 'all' && queueUserFilter === 'all'}
+                            >
+                                ล้างตัวกรอง
+                            </button>
+                            <span className="monitor-filter-count">
+                                แสดง {queueJobs.length} จาก {queueTotal} งาน
+                            </span>
+                        </div>
+
                         {/* Job list */}
                         {queueLoading && !queueJobs.length ? (
                             <div className="history-loading"><div className="history-spinner" /><span>กำลังโหลด...</span></div>
                         ) : queueJobs.length === 0 ? (
-                            <div className="history-empty"><h3>ยังไม่มีงานในระบบ</h3></div>
+                            <div className="history-empty">
+                                <h3>{queueStatusFilter === 'all' && queueUserFilter === 'all' ? 'ยังไม่มีงานในระบบ' : 'ไม่พบงานตามตัวกรอง'}</h3>
+                                {(queueStatusFilter !== 'all' || queueUserFilter !== 'all') && (
+                                    <button
+                                        className="btn btn-secondary"
+                                        onClick={() => {
+                                            setQueueStatusFilter('all');
+                                            setQueueUserFilter('all');
+                                        }}
+                                    >
+                                        แสดงงานทั้งหมด
+                                    </button>
+                                )}
+                            </div>
                         ) : (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                                {/* Header */}
-                                <div style={{
-                                    display: 'grid', gridTemplateColumns: '2fr 1.2fr 1fr 1.4fr auto',
-                                    gap: '0.75rem', padding: '0.4rem 0.75rem',
-                                    fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600,
-                                }}>
-                                    <span>ชื่อไฟล์</span><span>User ID</span><span>สถานะ</span><span>เวลา</span><span></span>
+                            <div className="monitor-table-scroll">
+                                <div className="monitor-table">
+                                    <div className="monitor-table-row monitor-table-header queue-grid">
+                                        <span>ชื่อไฟล์</span><span>ผู้ใช้งาน</span><span>สถานะ Process</span><span>เวลา</span><span></span>
+                                    </div>
+                                    {queueJobs.map(job => {
+                                        const statusOption = QUEUE_STATUS_OPTIONS.find(option => option.key === job.status);
+                                        const canCancel = job.status === 'queued' || job.status === 'processing';
+                                        return (
+                                            <div key={job._id} className="monitor-table-row queue-grid">
+                                                <span className="monitor-file-name" title={job.audio_file}>{job.audio_file || '—'}</span>
+                                                <UserIdentity user={job.user} userId={job.user_id} />
+                                                <span className="monitor-process">
+                                                    <strong style={{ color: statusOption?.color || 'var(--text-muted)' }}>
+                                                        {QUEUE_STATUS_LABELS[job.status] || job.status}
+                                                    </strong>
+                                                    {(job.status === 'queued' || job.status === 'processing') && (
+                                                        <small>
+                                                            {PROCESS_STEP_LABELS[job.current_step] || job.current_step || 'รอข้อมูล'}
+                                                            {Number.isFinite(job.progress) ? ` · ${job.progress}%` : ''}
+                                                        </small>
+                                                    )}
+                                                </span>
+                                                <span className="monitor-time">
+                                                    {job.created_at ? new Date(job.created_at).toLocaleString('th-TH') : '—'}
+                                                </span>
+                                                <span className="monitor-row-action">
+                                                    {canCancel && (
+                                                        <button
+                                                            onClick={() => handleCancelJob(job._id)}
+                                                            disabled={cancellingJob === job._id}
+                                                            className="monitor-cancel-button"
+                                                        >
+                                                            {cancellingJob === job._id ? 'กำลังยกเลิก...' : 'ยกเลิก'}
+                                                        </button>
+                                                    )}
+                                                </span>
+                                            </div>
+                                        );
+                                    })}
                                 </div>
-                                {queueJobs.map(job => {
-                                    const statusColor = {
-                                        queued: '#c68a19', processing: '#2563eb',
-                                        completed: '#2d8a4e', failed: '#c0392b', cancelled: '#7f8c8d',
-                                    }[job.status] || 'var(--text-muted)';
-                                    const canCancel = job.status === 'queued' || job.status === 'processing';
-                                    return (
-                                        <div key={job._id} style={{
-                                            display: 'grid', gridTemplateColumns: '2fr 1.2fr 1fr 1.4fr auto',
-                                            alignItems: 'center', gap: '0.75rem',
-                                            padding: '0.6rem 0.75rem', borderRadius: 8,
-                                            background: 'var(--bg-secondary)', fontSize: '0.83rem',
-                                        }}>
-                                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>
-                                                {job.audio_file || '—'}
-                                            </span>
-                                            <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: '0.74rem', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                {job.user_id}
-                                            </span>
-                                            <span style={{ color: statusColor, fontWeight: 600, fontSize: '0.78rem' }}>
-                                                {job.status}
-                                            </span>
-                                            <span style={{ color: 'var(--text-muted)', fontSize: '0.76rem' }}>
-                                                {job.created_at ? new Date(job.created_at).toLocaleString('th-TH') : '—'}
-                                            </span>
-                                            <span>
-                                                {canCancel && (
-                                                    <button
-                                                        onClick={() => handleCancelJob(job._id)}
-                                                        disabled={cancellingJob === job._id}
-                                                        style={{
-                                                            padding: '0.25rem 0.6rem', borderRadius: 6, border: '1px solid var(--error)',
-                                                            background: 'transparent', color: 'var(--error)', fontSize: '0.74rem',
-                                                            cursor: 'pointer', fontFamily: 'var(--font-thai)',
-                                                            opacity: cancellingJob === job._id ? 0.5 : 1,
-                                                        }}>
-                                                        {cancellingJob === job._id ? '...' : 'ยกเลิก'}
-                                                    </button>
-                                                )}
-                                            </span>
-                                        </div>
-                                    );
-                                })}
                             </div>
                         )}
                     </div>
@@ -317,17 +412,14 @@ function AdminMonitoring() {
                         ) : activityLogs.length === 0 ? (
                             <div className="history-empty"><h3>ยังไม่มี Activity Log</h3></div>
                         ) : (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                                {activityLogs.map((log, i) => (
-                                    <div key={i} style={{
-                                        display: 'grid', gridTemplateColumns: '1fr 2fr 1.5fr',
-                                        alignItems: 'center', gap: '0.75rem',
-                                        padding: '0.65rem 1rem', borderRadius: 8,
-                                        background: 'var(--bg-secondary)', fontSize: '0.84rem',
-                                    }}>
-                                        <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: '0.78rem', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                            {log.user_id}
-                                        </span>
+                            <div className="monitor-table-scroll">
+                                <div className="monitor-table activity-table">
+                                    <div className="monitor-table-row monitor-table-header activity-grid">
+                                        <span>ผู้ใช้งาน</span><span>กิจกรรม</span><span>เวลา</span>
+                                    </div>
+                                    {activityLogs.map(log => (
+                                        <div key={log._id} className="monitor-table-row activity-grid">
+                                            <UserIdentity user={log.user} userId={log.user_id} />
                                         <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
                                             {ACTION_LABELS[log.action] || log.action}
                                             {log.metadata?.filename && (
@@ -336,11 +428,12 @@ function AdminMonitoring() {
                                                 </span>
                                             )}
                                         </span>
-                                        <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem', textAlign: 'right' }}>
+                                        <span className="monitor-time monitor-time-right">
                                             {new Date(log.timestamp).toLocaleString('th-TH')}
                                         </span>
-                                    </div>
-                                ))}
+                                        </div>
+                                    ))}
+                                </div>
                             </div>
                         )}
                     </div>

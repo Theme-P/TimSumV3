@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from bson import ObjectId
 
 from app.core.auth import get_current_admin
@@ -6,6 +8,7 @@ from app.models.user import UserData
 from app.services.mongo import MongoService
 
 router = APIRouter(prefix="/api/admin", tags=["admin-queue"])
+VALID_JOB_STATUSES = {"queued", "processing", "completed", "failed", "cancelled"}
 
 
 def get_mongo(request: Request) -> MongoService:
@@ -22,14 +25,28 @@ async def queue_stats(
 
 @router.get("/queue/tasks")
 async def queue_tasks(
-    status: str = None,
-    limit: int = 50,
-    offset: int = 0,
+    status: Optional[str] = Query(None),
+    user_id: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     _admin: UserData = Depends(get_current_admin),
     mongo: MongoService = Depends(get_mongo),
 ):
-    jobs = mongo.get_all_jobs(status=status, limit=min(limit, 200), offset=offset)
-    return {"success": True, "jobs": jobs, "count": len(jobs)}
+    if status and status not in VALID_JOB_STATUSES:
+        raise HTTPException(status_code=400, detail="สถานะงานไม่ถูกต้อง")
+    jobs = mongo.get_all_jobs(
+        status=status,
+        user_id=user_id,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        "success": True,
+        "jobs": jobs,
+        "count": len(jobs),
+        "total": mongo.count_jobs(status=status, user_id=user_id),
+        "users": mongo.get_job_filter_users(),
+    }
 
 
 @router.delete("/queue/tasks/{job_id}")
