@@ -9,9 +9,12 @@ services:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASS}
       - MONGO_INITDB_DATABASE=timsumv3
+      - MONGO_BACKUP_USER=${MONGO_BACKUP_USER:-}
+      - MONGO_BACKUP_PASS=${MONGO_BACKUP_PASS:-}
     volumes:
       - mongo_data:/data/db
       - ./backend/scripts/init_mongo.js:/docker-entrypoint-initdb.d/init_mongo.js:ro
+      - ./backend/scripts/create_backup_user.js:/docker-entrypoint-initdb.d/create_backup_user.js:ro
     networks:
       - app-network
     mem_limit: 2g
@@ -134,6 +137,52 @@ services:
       timeout: 15s
       retries: 3
       start_period: 120s
+
+  # Daily encrypted MongoDB backup — opt in with: --profile backup
+  backup:
+    profiles: ["backup"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.backup
+    container_name: timsumv3-backup
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Bangkok
+      - MONGO_BACKUP_HOST=mongo
+      - MONGO_BACKUP_PORT=27017
+      - MONGO_BACKUP_AUTH_DB=admin
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-timsumv3}
+      - MONGO_USER=${MONGO_USER}
+      - MONGO_PASS=${MONGO_PASS}
+      - MONGO_BACKUP_USER=${MONGO_BACKUP_USER:-}
+      - MONGO_BACKUP_PASS=${MONGO_BACKUP_PASS:-}
+      - MONGO_BACKUP_USE_OPLOG=${MONGO_BACKUP_USE_OPLOG:-false}
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_USER}
+      - MINIO_SECRET_KEY=${MINIO_PASS}
+      - BACKUP_MINIO_ACCESS_KEY=${BACKUP_MINIO_ACCESS_KEY:-}
+      - BACKUP_MINIO_SECRET_KEY=${BACKUP_MINIO_SECRET_KEY:-}
+      - BACKUP_AGE_RECIPIENT=${BACKUP_AGE_RECIPIENT:-}
+      - BACKUP_BUCKET=${BACKUP_BUCKET:-db-backups}
+      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-30}
+      - BACKUP_SCHEDULE_HOUR=${BACKUP_SCHEDULE_HOUR:-2}
+      - BACKUP_SCHEDULE_MINUTE=${BACKUP_SCHEDULE_MINUTE:-0}
+      - BACKUP_RUN_ON_STARTUP=${BACKUP_RUN_ON_STARTUP:-false}
+      - BACKUP_CONFIGURE_BUCKET=${BACKUP_CONFIGURE_BUCKET:-true}
+    depends_on:
+      mongo:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - app-network
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/backup-scheduler-ready"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   # Frontend — React + Nginx Container
   frontend:

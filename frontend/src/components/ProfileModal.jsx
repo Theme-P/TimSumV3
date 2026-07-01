@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import VoiceLibrary from './VoiceLibrary'
+import Icon from './ui/Icon'
 
 const API_BASE = '/api'
 
@@ -343,14 +344,14 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
             >
                 <header className="settings-header">
                     <h2 id="profile-title" className="settings-title">
-                        <span>👤</span> จัดการโปรไฟล์
+                        <Icon name="user" /> จัดการโปรไฟล์
                     </h2>
                     <button
                         className="settings-close"
                         onClick={onClose}
                         aria-label="ปิด"
                     >
-                        ✕
+                        <Icon name="x-circle" />
                     </button>
                 </header>
                 
@@ -378,7 +379,7 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
                             className={`settings-tab ${activeTab === 'voice' ? 'active' : ''}`}
                             onClick={() => setActiveTab('voice')}
                         >
-                            🎙️ คลังเสียง
+                            <span className="icon-label"><Icon name="mic" /> คลังเสียง</span>
                         </button>
                     )}
                     <button
@@ -399,7 +400,7 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
                     {activeTab === 'profile' && (
                         <section className="settings-section">
                             <h3 className="settings-section-title">
-                                <span className="settings-section-icon">👤</span> บัญชีผู้ใช้ ({userInfo?.email})
+                                <Icon name="user" className="settings-section-icon" /> บัญชีผู้ใช้ ({userInfo?.email})
                             </h3>
                             
                             {profileStatus.message && (
@@ -411,7 +412,7 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
                                     color: profileStatus.type === 'success' ? '#34A853' : '#EA4335',
                                     border: `1px solid ${profileStatus.type === 'success' ? 'rgba(52, 168, 83, 0.2)' : 'rgba(234, 67, 53, 0.2)'}`
                                 }}>
-                                    {profileStatus.type === 'success' ? '✅' : '❌'} {profileStatus.message}
+                                    <span className="icon-label"><Icon name={profileStatus.type === 'success' ? 'check-circle' : 'x-circle'} /> {profileStatus.message}</span>
                                 </div>
                             )}
 
@@ -472,7 +473,7 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
                     {activeTab === 'security' && (
                         <section className="settings-section">
                             <h3 className="settings-section-title">
-                                <span className="settings-section-icon">🔒</span> เปลี่ยนรหัสผ่าน
+                                <Icon name="lock" className="settings-section-icon" /> เปลี่ยนรหัสผ่าน
                             </h3>
                             
                             {passwordStatus.message && (
@@ -484,7 +485,7 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
                                     color: passwordStatus.type === 'success' ? '#34A853' : '#EA4335',
                                     border: `1px solid ${passwordStatus.type === 'success' ? 'rgba(52, 168, 83, 0.2)' : 'rgba(234, 67, 53, 0.2)'}`
                                 }}>
-                                    {passwordStatus.type === 'success' ? '✅' : '❌'} {passwordStatus.message}
+                                    <span className="icon-label"><Icon name={passwordStatus.type === 'success' ? 'check-circle' : 'x-circle'} /> {passwordStatus.message}</span>
                                 </div>
                             )}
 
@@ -538,7 +539,7 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
                     {activeTab === 'package' && (
                         <section className="settings-section">
                             <h3 className="settings-section-title">
-                                <span className="settings-section-icon">📦</span>
+                                <Icon name="box" className="settings-section-icon" />
                                 แพ็กเกจ & การใช้งาน
                             </h3>
                             {pkg ? (
@@ -774,7 +775,7 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
                     {activeTab === 'activity' && (
                         <section className="settings-section">
                             <h3 className="settings-section-title">
-                                <span className="settings-section-icon">📋</span> ประวัติการใช้งาน (10 รายการล่าสุด)
+                                <Icon name="clipboard-list" className="settings-section-icon" /> ประวัติการใช้งาน (10 รายการล่าสุด)
                             </h3>
                             {activityLogs.length === 0 ? (
                                 <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '2rem 0' }}>ยังไม่มีประวัติการใช้งาน</p>
@@ -802,7 +803,7 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
                     {activeTab === 'consent' && (
                         <section className="settings-section">
                             <h3 className="settings-section-title">
-                                <span className="settings-section-icon">🛡️</span> การยินยอม PDPA
+                                <Icon name="shield" className="settings-section-icon" /> การยินยอม PDPA
                             </h3>
                             {consentData ? (
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
@@ -829,8 +830,8 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
                                                         </span>
                                                     )}
                                                 </div>
-                                                <span style={{ fontSize: '0.85rem', fontWeight: 600, color: info.consented ? 'var(--success)' : 'var(--text-muted)' }}>
-                                                    {info.consented ? '✓ ยินยอมแล้ว' : '✗ ยังไม่ยินยอม'}
+                                                <span className="icon-label" style={{ fontSize: '0.85rem', fontWeight: 600, color: info.consented ? 'var(--success)' : 'var(--text-muted)' }}>
+                                                    <Icon name={info.consented ? 'check-circle' : 'x-circle'} /> {info.consented ? 'ยินยอมแล้ว' : 'ยังไม่ยินยอม'}
                                                 </span>
                                             </div>
                                             {info.consented_at && (

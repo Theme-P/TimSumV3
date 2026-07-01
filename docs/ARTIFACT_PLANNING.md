@@ -60,13 +60,13 @@
 | 9a | Auto mode summary [default] | ✅ เสร็จแล้ว | - |
 | 9b | ผู้ใช้ prompt เพิ่มเพื่อกำหนดรูปแบบสรุป | ✅ เสร็จแล้ว | กลาง |
 | 10 | PDPA — 3 ระดับ user (superadmin/admin/user) | ✅ เสร็จแล้ว | สูง |
-| 11 | Encrypt/tokenize ข้อมูลส่วนบุคคลใน DB | 🔴 ไม่มี | สูง |
+| 11 | Encrypt/tokenize ข้อมูลส่วนบุคคลใน DB | ✅ เสร็จแล้ว | สูง |
 | 12 | PDPA Consent UI & Management | ✅ เสร็จแล้ว | สูง |
 | 13 | User Activity Log & Audit Trail | ✅ เสร็จแล้ว | สูง |
 | 14 | Transcript/Summary รองรับ 3 ภาษา (ไทย/อังกฤษ/จีน) | ✅ เสร็จแล้ว (Phase 12) | กลาง |
 | 15 | Queue Monitoring (Admin) | ✅ เสร็จแล้ว | กลาง |
 | 16 | Server Resource Monitoring + Ollama Management | ✅ เสร็จแล้ว (Phase 10) | กลาง |
-| 17 | Scheduled Daily DB Backup | 🔴 ไม่มี | กลาง |
+| 17 | Scheduled Daily DB Backup | ✅ Core เสร็จแล้ว | กลาง |
 | 18 | Human Speaker Verification (ยืนยันเสียงโดย Human) | 🔴 ไม่มี | กลาง |
 | 19 | Sub-agenda Auto-separation & Analysis | ✅ เสร็จแล้ว | ต่ำ |
 | 20 | LLM Settings & Rule-based Templates | ✅ เสร็จแล้ว | ต่ำ |
@@ -513,30 +513,31 @@
 | แก้ไข | `frontend/src/pages/AdminDashboard.jsx` — conditional display |
 | แก้ไข | `backend/scripts/create_admin.py` — สร้าง superadmin |
 
-#### Artifact 3.2: PII Encryption at Rest (Database-Level)
+#### Artifact 3.2: PII Encryption at Rest (Database-Level) ✅ COMPLETED (2026-06-30)
 
 **Backend:**
 - สร้าง encryption service:
   *[รายละเอียดโค้ดถูกตัดออกเพื่อความกระชับ]*
 - Fields ที่ต้อง encrypt:
-  - `user.first_name`, `user.last_name`
-  - `user.phone`
-  - `user.email` (เก็บทั้ง encrypted + tokenized สำหรับ lookup)
+  - `user.email`, `username`, `first_name`, `last_name`, `phone`, `organization`
+  - email เก็บ blind index แบบ keyed HMAC สำหรับ lookup/unique constraint
 - Key management:
-  - Master encryption key ใน environment variable (`PII_ENCRYPTION_KEY`)
+  - Versioned keys ใน `PII_ENCRYPTION_KEYS`
+  - Blind-index key แยกใน `PII_BLIND_INDEX_KEY`
   - Key rotation support (versioned keys)
-- MongoDB: เก็บเป็น `{ encrypted: "...", nonce: "...", version: 1 }`
-- Migration script: encrypt ข้อมูลเดิมที่เป็น plaintext
+- MongoDB: AES-256-GCM authenticated encryption พร้อม AAD ผูก user/field
+- Migration script รองรับ dry-run, idempotent apply, verification และ finalize
+- Password-reset token เก็บแบบ SHA-256 hash; JWT ใหม่ไม่บรรจุ email/username
 
 **Files ที่ต้องแก้/สร้าง:**
 | Action | File |
 |--------|------|
 | สร้างใหม่ | `backend/app/services/encryption.py` — PIIEncryptor class |
 | แก้ไข | `backend/app/services/mongo.py` — encrypt/decrypt on read/write |
-| แก้ไข | `backend/app/models/user.py` — encrypted field definitions |
 | สร้างใหม่ | `backend/scripts/migrate_encrypt_pii.py` — migration script |
-| แก้ไข | `.env.example` — เพิ่ม PII_ENCRYPTION_KEY |
-| แก้ไข | `docker-compose.yml` — pass encryption key |
+| สร้างใหม่ | `backend/tests/test_pii_encryption.py` — encryption regression tests |
+| แก้ไข | `.env.example` — เพิ่ม versioned keys + migration flags |
+| สร้างใหม่ | `docs/ENCRYPTION_BACKUP_GUIDE.md` — operation/rotation guide |
 
 ---
 
@@ -793,37 +794,35 @@
 
 ---
 
-### Phase 11: Scheduled Database Backup 🔴 (Priority: กลาง)
+### Phase 11: Scheduled Database Backup ✅ CORE COMPLETED (2026-06-30)
 
 **เหตุผล:** ป้องกันข้อมูลสูญหาย — backup อัตโนมัติทุกวัน + เก็บไว้ 30 วัน
 
 #### Artifact 11.1: Automated MongoDB Backup
 
-**Backend:**
-- Celery Beat task: `backup_mongodb()` — รันทุกวันตี 2
-  - `mongodump` → compress → เก็บใน MinIO bucket `db-backups`
-  - ลบ backups ที่เก่ากว่า 30 วัน (cleanup)
-  - ส่ง email แจ้ง superadmin เมื่อ backup สำเร็จ/ล้มเหลว
-- APIs:
-  - `GET /api/admin/backups` — list backup files + size + date
-  - `POST /api/admin/backups/trigger` — manual trigger backup (superadmin)
-  - `GET /api/admin/backups/{id}/download` — download backup file
+**Backup service:**
+- Dedicated CPU container — ไม่ใช้ GPU transcription worker
+- รันทุกวันตี 2 Asia/Bangkok และรองรับ one-shot manual backup
+- `mongodump --archive --gzip` → age encryption → MinIO `db-backups`
+- SHA-256 remote download verification ก่อนรายงาน success
+- MinIO versioning + GOVERNANCE WORM retention + lifecycle cleanup
+- รองรับ MongoDB built-in `backup` role และ replica-set `--oplog`
+- Admin API/UI และ notification เป็น optional follow-up; core scheduling/restore พร้อมใช้
 
 **Infrastructure:**
 - MinIO bucket: `db-backups`
-- Celery Beat scheduler เพิ่ม schedule ใน `celery_config.py`
-- `mongodump` ต้องมีใน GPU worker container
+- Compose profile: `backup`
+- age private identity เก็บ offline; container มีเฉพาะ public recipient
 
 **Files ที่ต้องแก้/สร้าง:**
 | Action | File |
 |--------|------|
-| สร้างใหม่ | `backend/app/tasks/backup.py` — backup Celery task |
-| แก้ไข | `backend/app/services/storage.py` — เพิ่ม db-backups bucket |
-| แก้ไข | `backend/celery_config.py` — เพิ่ม beat schedule |
-| สร้างใหม่ | `backend/app/routers/backup.py` — backup management endpoints |
-| แก้ไข | `backend/api.py` — register backup router |
-| แก้ไข | `docker-compose.yml` — เพิ่ม mongodump ใน worker |
-| แก้ไข | `frontend/src/components/admin/ServerResources.jsx` — แสดง backup status |
+| สร้างใหม่ | `backend/Dockerfile.backup` — lightweight Mongo tools + mc + age |
+| สร้างใหม่ | `backend/scripts/backup_mongodb.sh` — dump/encrypt/upload/verify |
+| สร้างใหม่ | `backend/scripts/backup_scheduler.sh` — daily scheduler |
+| สร้างใหม่ | `backend/scripts/create_backup_user.js` — least-privilege DB user |
+| แก้ไข | `docker-compose.yml` — เพิ่ม opt-in backup profile |
+| สร้างใหม่ | `docs/ENCRYPTION_BACKUP_GUIDE.md` — backup/restore runbook |
 
 ---
 
@@ -1148,10 +1147,14 @@
 
 | Variable | จาก Phase | หน้าที่ |
 |----------|-----------|---------|
-| `PII_ENCRYPTION_KEY` | Phase 3 | AES-256 master key |
-| `PII_KEY_VERSION` | Phase 3 | Key rotation version |
+| `PII_ENCRYPTION_ENABLED` | Phase 3 | เปิด application-level PII encryption |
+| `PII_ENCRYPTION_KEYS` | Phase 3 | JSON map ของ AES-256 keys แยกตาม version |
+| `PII_ACTIVE_KEY_VERSION` | Phase 3 | Key version ที่ใช้กับข้อมูลใหม่ |
+| `PII_BLIND_INDEX_KEY` | Phase 3 | HMAC key สำหรับ email equality lookup |
+| `PII_ALLOW_LEGACY_PLAINTEXT` | Phase 3 | compatibility flag ระหว่าง migration |
+| `BACKUP_AGE_RECIPIENT` | Phase 11 | age public recipient สำหรับเข้ารหัส archive |
 | `BACKUP_RETENTION_DAYS` | Phase 11 | จำนวนวันเก็บ backup (default: 30) |
-| `BACKUP_NOTIFY_EMAIL` | Phase 11 | Email แจ้งผล backup |
+| `MONGO_BACKUP_USER/PASS` | Phase 11 | least-privilege mongodump credential |
 | `JWT_REFRESH_SECRET` | Phase 16 | Secret สำหรับ refresh tokens |
 
 ---

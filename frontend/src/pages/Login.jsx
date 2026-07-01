@@ -1,9 +1,21 @@
 import { useState } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import Icon from '../components/ui/Icon';
 import '../styles/Login.css';
 
 const API_BASE = '/api';
+
+async function readResponseData(response) {
+    const body = await response.text();
+    if (!body) return {};
+
+    try {
+        return JSON.parse(body);
+    } catch {
+        return {};
+    }
+}
 
 const Login = () => {
     const [email, setEmail] = useState('');
@@ -29,16 +41,26 @@ const Login = () => {
                 body: JSON.stringify({ email, password }),
             });
 
-            const data = await response.json();
+            const data = await readResponseData(response);
 
             if (!response.ok) {
-                throw new Error(data.detail || data.message || 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ');
+                const fallbackMessage = response.status >= 500
+                    ? `เซิร์ฟเวอร์ยังไม่พร้อมใช้งาน (HTTP ${response.status})`
+                    : 'อีเมลหรือรหัสผ่านไม่ถูกต้อง';
+                throw new Error(data.detail || data.message || fallbackMessage);
+            }
+
+            if (!data.token) {
+                throw new Error('เซิร์ฟเวอร์ตอบกลับไม่สมบูรณ์ กรุณาลองใหม่');
             }
 
             login(data.token);
             navigate(from, { replace: true });
         } catch (err) {
-            setError(err.message || 'อีเมลหรือรหัสผ่านไม่ถูกต้อง');
+            const message = err instanceof TypeError
+                ? 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่'
+                : err.message;
+            setError(message || 'อีเมลหรือรหัสผ่านไม่ถูกต้อง');
         } finally {
             setIsLoading(false);
         }
@@ -78,7 +100,7 @@ const Login = () => {
                     <form className="login-form-new" onSubmit={handleSubmit}>
                         {error && (
                             <div className="login-error-new">
-                                <span>❌</span> {error}
+                                <Icon name="x-circle" /> {error}
                             </div>
                         )}
 

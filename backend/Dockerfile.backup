@@ -1,0 +1,20 @@
+FROM minio/mc:latest AS minio_client
+
+# Keep MongoDB Database Tools isolated from the CUDA application image.
+FROM mongo:8.0
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    age \
+    ca-certificates \
+    tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=minio_client /usr/bin/mc /usr/local/bin/mc
+COPY scripts/backup_mongodb.sh /usr/local/bin/backup-mongodb
+COPY scripts/backup_scheduler.sh /usr/local/bin/backup-scheduler
+
+RUN chmod 0755 /usr/local/bin/backup-mongodb /usr/local/bin/backup-scheduler
+
+ENTRYPOINT ["/usr/local/bin/backup-scheduler"]

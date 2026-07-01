@@ -8,14 +8,16 @@ from bson import ObjectId
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
 from app.models.user import User, UserData, Quota, USER_STATUS_APPROVED, VALID_STATUSES
+from app.services.encryption import PIIEncryptor
 
 logger = logging.getLogger(__name__)
 
 class MongoService:
-    def __init__(self, uri: str, db_name: str, cache=None) -> None:
+    def __init__(self, uri: str, db_name: str, cache=None, pii_encryptor=None) -> None:
         self.client = MongoClient(uri, tz_aware=True)
         self.db = self.client[db_name]
         self.cache = cache  # Optional CacheService instance
+        self.pii = pii_encryptor or PIIEncryptor.from_env()
 
         # Explicitly create collections if they don't exist
         required_collections = [
@@ -40,7 +42,29 @@ class MongoService:
         self.db.consent_record.create_index([("user_id", 1), ("consent_type", 1)], background=True)
 
         # Performance indexes (Phase 16.2)
-        self.db.user.create_index("email", unique=True, background=True)
+        # During the rolling PII migration, plaintext users are protected by
+        # the legacy email index and encrypted users by a keyed blind index.
+        user_indexes = self.db.user.index_information()
+        has_email_index = any(
+            info.get("key") == [("email", 1)] for info in user_indexes.values()
+        )
+        if not has_email_index and (
+            not self.pii.enabled or self.pii.allow_legacy_plaintext
+        ):
+            self.db.user.create_index(
+                "email",
+                unique=True,
+                partialFilterExpression={"email": {"$type": "string"}},
+                name="email_legacy_unique",
+                background=True,
+            )
+        self.db.user.create_index(
+            "email_bidx",
+            unique=True,
+            partialFilterExpression={"email_bidx": {"$type": "string"}},
+            name="email_bidx_unique",
+            background=True,
+        )
         self.db.quota.create_index("user_id", unique=True, background=True)
         self.db.user_package.create_index("user_id", unique=True, background=True)
         self.db.package.create_index("name", unique=True, background=True)
@@ -87,16 +111,43 @@ class MongoService:
         test_hash, _ = self._hash_password(password, salt)
         return secrets.compare_digest(test_hash, hashed_password)
 
+    def _user_email_query(self, email: str) -> dict:
+        """Build a lookup that supports encrypted and legacy users."""
+        normalized = self.pii.normalize_email(email)
+        if not self.pii.enabled:
+            return {"email": normalized}
+        encrypted_query = {"email_bidx": self.pii.blind_index(normalized)}
+        if self.pii.allow_legacy_plaintext:
+            return {"$or": [encrypted_query, {"email": normalized}]}
+        return encrypted_query
+
+    def _decrypt_user_document(self, document: Optional[dict]) -> Optional[dict]:
+        if document is None:
+            return None
+        return self.pii.decrypt_user_document(document)
+
+    def get_user_document_by_id(
+        self,
+        user_id: str,
+        projection: Optional[dict] = None,
+    ) -> Optional[dict]:
+        """Return one decrypted user document for authentication/internal use."""
+        obj_id = self._object_id(user_id)
+        if not obj_id:
+            return None
+        document = self.db.user.find_one({"_id": obj_id}, projection)
+        return self._decrypt_user_document(document)
+
     def authenticate_user(self, email: str, password: str) -> Optional[User]:
         """Authenticate user with email and password. Only approved users can login."""
-        user_data = self.db.user.find_one({"email": email})
+        user_data = self.db.user.find_one(self._user_email_query(email))
         if not user_data:
             return None
 
         if not self._verify_password(password, user_data["password"], user_data["salt"]):
             return None
 
-        user = User(**user_data)
+        user = User(**self._decrypt_user_document(user_data))
         # Check user status — only approved users can login
         status = user_data.get("status", USER_STATUS_APPROVED)
         if status != USER_STATUS_APPROVED:
@@ -106,7 +157,7 @@ class MongoService:
 
     def get_user_by_id(self, user_id: str) -> User:
         """Retrieve a user by their ID."""
-        user = self.db.user.find_one({"_id": ObjectId(user_id)})
+        user = self.get_user_document_by_id(user_id)
         if not user:
             msg = "User not found"
             raise ValueError(msg)
@@ -114,10 +165,10 @@ class MongoService:
 
     def get_user_by_email(self, email: str) -> Optional[User]:
         """Retrieve a user by their email."""
-        user = self.db.user.find_one({"email": email})
+        user = self.db.user.find_one(self._user_email_query(email))
         if not user:
             return None
-        return User(**user)
+        return User(**self._decrypt_user_document(user))
 
     def get_quota_by_user_id(self, user_id: ObjectId) -> Quota:
         """Retrieve quota by user ID."""
@@ -129,8 +180,8 @@ class MongoService:
         return Quota(**quota)
 
     def create_user(self, user: User) -> None:
-        """Create a new user in the database with encrypted password."""
-        if self.db.user.find_one({"email": user.email}):
+        """Create a user with a hashed password and encrypted PII."""
+        if self.db.user.find_one(self._user_email_query(user.email)):
             msg = "User with this email already exists"
             raise ValueError(msg)
 
@@ -141,8 +192,12 @@ class MongoService:
         user_data = user.model_dump(by_alias=True)
         user_data["password"] = hashed_password
         user_data["salt"] = salt
+        user_data = self.pii.encrypt_user_document(user_data)
 
-        self.db.user.insert_one(user_data)
+        try:
+            self.db.user.insert_one(user_data)
+        except DuplicateKeyError as exc:
+            raise ValueError("User with this email already exists") from exc
 
     def create_quota(self, quota: Quota) -> None:
         """Create a new quota for a user."""
@@ -154,6 +209,7 @@ class MongoService:
     def update_user(self, user_id: str, user: User) -> None:
         """Update an existing user."""
         user_data = user.model_dump(by_alias=True)
+        user_data.pop("_id", None)
 
         # If password is being updated, hash it
         if "password" in user_data:
@@ -161,6 +217,8 @@ class MongoService:
             hashed_password, salt = self._hash_password(password_str)
             user_data["password"] = hashed_password
             user_data["salt"] = salt
+
+        user_data = self.pii.encrypt_user_fields(user_id, user_data)
 
         result = self.db.user.update_one(
             {"_id": ObjectId(user_id)},
@@ -194,8 +252,11 @@ class MongoService:
         self.db.quota.delete_one({"user_id": obj_id})
         self.db.user_package.delete_many({"user_id": obj_id})
         self.db.session.delete_many({"user_id": obj_id})
+        self.db.job.delete_many({"user_id": obj_id})
         self.db.voice_sample.delete_many({"user_id": obj_id})
-        self.db.consent_record.delete_many({"user_id": str(user_id)})
+        # consent_record stores user_id as string — must match the stored format
+        self.db.consent_record.delete_many({"user_id": user_id})
+        self.db.activity_log.delete_many({"user_id": user_id})
         self.db.package_request.delete_many({"user_id": obj_id})
         self.db.package_assignment_history.delete_many({"user_id": obj_id})
 
@@ -210,14 +271,14 @@ class MongoService:
 
     def get_user_status(self, email: str) -> Optional[str]:
         """Get user status by email. Returns None if user not found."""
-        user_data = self.db.user.find_one({"email": email}, {"status": 1})
+        user_data = self.db.user.find_one(self._user_email_query(email), {"status": 1})
         if not user_data:
             return None
         return user_data.get("status", USER_STATUS_APPROVED)
 
     def register_public_user(self, user: User) -> str:
         """Register a new public user with pending status. Returns user_id."""
-        if self.db.user.find_one({"email": user.email}):
+        if self.db.user.find_one(self._user_email_query(user.email)):
             msg = "User with this email already exists"
             raise ValueError(msg)
 
@@ -229,8 +290,12 @@ class MongoService:
         user_data["salt"] = salt
         user_data["status"] = "pending"
         user_data["registered_at"] = datetime.now(timezone.utc)
+        user_data = self.pii.encrypt_user_document(user_data)
 
-        result = self.db.user.insert_one(user_data)
+        try:
+            result = self.db.user.insert_one(user_data)
+        except DuplicateKeyError as exc:
+            raise ValueError("User with this email already exists") from exc
         return str(result.inserted_id)
 
     def get_users_by_status(self, status: Optional[str] = None, limit: int = 100) -> list:
@@ -244,12 +309,47 @@ class MongoService:
             .sort("registered_at", -1)
             .limit(limit)
         )
+        user_docs = list(cursor)
+        user_ids = [doc["_id"] for doc in user_docs]
+        assignments = {
+            doc["user_id"]: doc
+            for doc in self.db.user_package.find({"user_id": {"$in": user_ids}})
+        } if user_ids else {}
+        package_ids = {
+            assignment["package_id"]
+            for assignment in assignments.values()
+            if assignment.get("package_id")
+        }
+        packages = {
+            doc["_id"]: doc
+            for doc in self.db.package.find({"_id": {"$in": list(package_ids)}})
+        } if package_ids else {}
+
         users = []
-        for doc in cursor:
-            doc["_id"] = str(doc["_id"])
+        for doc in user_docs:
+            doc = self._decrypt_user_document(doc)
+            user_obj_id = doc["_id"]
+            assignment = assignments.get(user_obj_id)
+            package = packages.get(assignment.get("package_id")) if assignment else None
+
+            doc["_id"] = str(user_obj_id)
+            doc.pop("email_bidx", None)
+            doc.pop("pii_encryption_version", None)
+            doc.pop("pii_migrated_at", None)
             for ts_field in ("registered_at", "approved_at"):
-                if doc.get(ts_field):
-                    doc[ts_field] = doc[ts_field].isoformat()
+                timestamp = doc.get(ts_field)
+                if timestamp and hasattr(timestamp, "isoformat"):
+                    doc[ts_field] = timestamp.isoformat()
+
+            doc["current_package"] = None
+            if assignment and package:
+                doc["current_package"] = {
+                    "_id": str(package["_id"]),
+                    "name": package.get("name"),
+                    "tier": package.get("tier", 0),
+                    "billing_cycle": package.get("billing_cycle"),
+                    "status": assignment.get("status", "active"),
+                }
             users.append(doc)
         return users
 
@@ -560,6 +660,7 @@ class MongoService:
             {"_id": doc["user_id"]},
             {"password": 0, "salt": 0},
         )
+        user = self._decrypt_user_document(user)
         current_pkg = self.db.package.find_one({"_id": doc.get("current_package_id")}) if doc.get("current_package_id") else None
         requested_pkg = self.db.package.find_one({"_id": doc.get("requested_package_id")}) if doc.get("requested_package_id") else None
         return self._format_package_request(doc, user, current_pkg, requested_pkg)
@@ -592,7 +693,7 @@ class MongoService:
             if pkg_id
         }
         users = {
-            doc["_id"]: doc
+            doc["_id"]: self._decrypt_user_document(doc)
             for doc in self.db.user.find({"_id": {"$in": user_ids}}, {"password": 0, "salt": 0})
         }
         packages = {
@@ -1025,14 +1126,14 @@ class MongoService:
 
     # ── Password Reset & Profile Update ──
 
-    def create_password_reset_token(self, email: str, token: str, expires_at: datetime) -> None:
-        """Create a new password reset token."""
-        # Delete any existing tokens for this email
-        self.db.password_reset.delete_many({"email": email})
-        
+    def create_password_reset_token(self, user_id: str, token: str, expires_at: datetime) -> None:
+        """Store a one-way hash of a reset token, never the credential itself."""
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        self.db.password_reset.delete_many({"user_id": user_id})
+
         doc = {
-            "email": email,
-            "token": token,
+            "user_id": user_id,
+            "token_hash": token_hash,
             "created_at": datetime.now(timezone.utc),
             "expires_at": expires_at,
         }
@@ -1041,12 +1142,21 @@ class MongoService:
     def get_password_reset_token(self, token: str) -> Optional[dict]:
         """Retrieve a password reset token if it hasn't expired."""
         now = datetime.now(timezone.utc)
-        doc = self.db.password_reset.find_one({"token": token, "expires_at": {"$gt": now}})
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        # The plaintext branch is temporary compatibility for unexpired tokens
+        # created before token hashing was introduced.
+        doc = self.db.password_reset.find_one({
+            "$or": [{"token_hash": token_hash}, {"token": token}],
+            "expires_at": {"$gt": now},
+        })
         return doc
 
     def delete_password_reset_token(self, token: str) -> None:
         """Delete a password reset token after use."""
-        self.db.password_reset.delete_one({"token": token})
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        self.db.password_reset.delete_one({
+            "$or": [{"token_hash": token_hash}, {"token": token}],
+        })
 
     def update_user_password(self, user_id: str, new_password: str) -> None:
         """Update a user's password."""
@@ -1220,8 +1330,9 @@ class MongoService:
         configs = []
         for doc in cursor:
             doc["_id"] = str(doc["_id"])
-            if doc.get("updated_at"):
-                doc["updated_at"] = doc["updated_at"].isoformat()
+            updated_at = doc.get("updated_at")
+            if updated_at and hasattr(updated_at, "isoformat"):
+                doc["updated_at"] = updated_at.isoformat()
             configs.append(doc)
         return configs
 
@@ -1230,8 +1341,9 @@ class MongoService:
         doc = self.db.llm_config.find_one({"name": name})
         if doc:
             doc["_id"] = str(doc["_id"])
-            if doc.get("updated_at"):
-                doc["updated_at"] = doc["updated_at"].isoformat()
+            updated_at = doc.get("updated_at")
+            if updated_at and hasattr(updated_at, "isoformat"):
+                doc["updated_at"] = updated_at.isoformat()
         return doc
 
     def upsert_llm_config(self, name: str, config_data: dict) -> str:
@@ -1266,7 +1378,8 @@ class MongoService:
         
         if not update_data:
             return
-            
+
+        update_data = self.pii.encrypt_user_fields(user_id, update_data)
         result = self.db.user.update_one(
             {"_id": ObjectId(user_id)},
             {"$set": update_data},
@@ -1276,7 +1389,7 @@ class MongoService:
 
     # ── Meeting Templates ──
 
-    def get_meeting_template(self, meeting_type_id: str) -> Optional[dict]:
+    def get_meeting_template(self, meeting_type_id: int) -> Optional[dict]:
         """Get a single meeting template by ID."""
         cache_key = f"mtg_tmpl:{meeting_type_id}"
         if self.cache:
@@ -1309,7 +1422,7 @@ class MongoService:
             self.cache.set(cache_key, templates)
         return templates
 
-    def update_meeting_template(self, meeting_type_id: str, data: dict) -> bool:
+    def update_meeting_template(self, meeting_type_id: int, data: dict) -> bool:
         """Update or insert a meeting template."""
         data.setdefault("updated_at", datetime.now(timezone.utc))
         result = self.db.meeting_template.update_one(

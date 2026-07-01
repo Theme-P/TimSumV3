@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import Icon from './ui/Icon'
 
 const API_BASE = '/api'
 
@@ -123,11 +124,11 @@ function SpeakerIdentification({ result, sessionId, token, onMappingChange, isCo
             <div className="speaker-id-header" onClick={onToggleCollapse} style={{ cursor: 'pointer' }}>
                 <div className="speaker-id-title-row">
                     <h3 className="speaker-id-title">
-                        👥 ข้อมูลผู้เข้าร่วมประชุม
+                        <Icon name="users" /> ข้อมูลผู้เข้าร่วมประชุม
                         <span className="speaker-id-count">{filledCount}/{speakers.length}</span>
                     </h3>
                     <button className="btn-collapse" title={isCollapsed ? 'ขยาย' : 'ย่อ'}>
-                        {isCollapsed ? '▼ แก้ไข' : '▲ ย่อ'}
+                        <span className="icon-label"><Icon name="chevron-down" className={isCollapsed ? '' : 'icon-rotate-180'} /> {isCollapsed ? 'แก้ไข' : 'ย่อ'}</span>
                     </button>
                 </div>
                 {isCollapsed && filledCount > 0 && (
@@ -149,7 +150,7 @@ function SpeakerIdentification({ result, sessionId, token, onMappingChange, isCo
                 <>
                     <p className="speaker-id-subtitle">
                         {detectedCount > 0
-                            ? <>AI ตรวจพบชื่อ <strong>{detectedCount}</strong> จาก <strong>{speakers.length}</strong> คน ✨ แก้ไขได้ตลอดเวลา</>
+                            ? <>AI ตรวจพบชื่อ <strong>{detectedCount}</strong> จาก <strong>{speakers.length}</strong> คน แก้ไขได้ตลอดเวลา</>
                             : <>พบผู้พูด <strong>{speakers.length}</strong> คน — ฟังเสียงตัวอย่างแล้วกรอกชื่อ</>
                         }
                     </p>
@@ -184,14 +185,14 @@ function SpeakerIdentification({ result, sessionId, token, onMappingChange, isCo
                                                 onClick={(e) => { e.stopPropagation(); handlePlayClip(speaker) }}
                                                 title={isPlaying ? 'หยุดเล่น' : 'เล่นตัวอย่างเสียง'}
                                             >
-                                                {isPlaying ? '⏹️ หยุด' : '▶️ ฟังเสียง'}
+                                                <span className="icon-label"><Icon name={isPlaying ? 'square' : 'play'} /> {isPlaying ? 'หยุด' : 'ฟังเสียง'}</span>
                                             </button>
                                         )}
                                     </div>
 
                                     {clip && (
                                         <div className="speaker-id-clip-info">
-                                            🔊 ตัวอย่างเสียง {clip.duration.toFixed(1)} วินาที
+                                            <Icon name="volume" /> ตัวอย่างเสียง {clip.duration.toFixed(1)} วินาที
                                             ({formatTime(clip.start)} - {formatTime(clip.end)})
                                         </div>
                                     )}

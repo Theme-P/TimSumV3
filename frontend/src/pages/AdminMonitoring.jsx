@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Link } from 'react-router-dom';
 import ServerResources from '../components/admin/ServerResources';
+import Icon from '../components/ui/Icon';
 
 const API_BASE = '/api';
 
@@ -175,12 +176,12 @@ function AdminMonitoring() {
                                 </div>
                                 <div className="nav-dropdown-divider" />
                                 <button className="nav-dropdown-item">
-                                    <span className="nav-dropdown-item-icon">&#128100;</span>
+                                    <Icon name="user" className="nav-dropdown-item-icon" />
                                     โปรไฟล์
                                 </button>
                                 <div className="nav-dropdown-divider" />
                                 <button className="nav-dropdown-item nav-dropdown-logout" onClick={logout}>
-                                    <span className="nav-dropdown-item-icon">&#8594;</span>
+                                    <Icon name="logout" className="nav-dropdown-item-icon" />
                                     ออกจากระบบ
                                 </button>
                             </div>

@@ -1,16 +1,18 @@
+import Icon from './ui/Icon'
+
 const STEPS = [
-    { id: 0, label: 'โหลดโมเดล', icon: '🧠' },
-    { id: 1, label: 'โหลดเสียง', icon: '🎵' },
-    { id: 2, label: 'ถอดเสียง', icon: '✍️' },
-    { id: 3, label: 'แยกผู้พูด', icon: '👥' },
-    { id: 4, label: 'สรุป AI', icon: '📝' },
+    { id: 0, label: 'โหลดโมเดล' },
+    { id: 1, label: 'โหลดเสียง' },
+    { id: 2, label: 'ถอดเสียง' },
+    { id: 3, label: 'แยกผู้พูด' },
+    { id: 4, label: 'สรุป AI' },
 ]
 
 function ProcessingStatus({ currentStep, progress }) {
     return (
         <div className="processing-status">
             <h3 className="processing-title">
-                <span className="spinner">⏳</span>
+                <Icon name="refresh" className="ui-icon-spin" />
                 กำลังประมวลผล...
             </h3>
 
@@ -35,7 +37,11 @@ function ProcessingStatus({ currentStep, progress }) {
                             className={`step ${isCompleted ? 'completed' : ''} ${isActive ? 'active' : ''}`}
                         >
                             <span className="step-icon">
-                                {isCompleted ? '✓' : isActive ? '●' : '○'}
+                                {isCompleted
+                                    ? <Icon name="check-circle" />
+                                    : isActive
+                                        ? <Icon name="refresh" className="ui-icon-spin" />
+                                        : <Icon name="clock" />}
                             </span>
                             <span>{step.label}</span>
                         </div>

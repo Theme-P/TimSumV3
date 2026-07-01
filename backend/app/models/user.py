@@ -1,5 +1,5 @@
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from bson import ObjectId
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
@@ -72,7 +72,7 @@ class PasswordReset(BaseModel):
     id: ObjectId = Field(alias="_id", default_factory=ObjectId)
     email: str
     token: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: datetime
 
     model_config = ConfigDict(

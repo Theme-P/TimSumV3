@@ -1,7 +1,7 @@
 """
 Enhanced Summarizer — Merged from ST + V3.
 
-Uses GPT-4.1 via NTC API Gateway for all LLM calls.
+Uses the configured NTC_MODEL via NTC API Gateway for all LLM calls.
 Adds: auto-classification, hierarchical chunking for long transcripts,
 and keyword-based fallback classification.
 """
@@ -11,42 +11,137 @@ import os
 import json
 import re
 import logging
-from typing import Dict, Tuple, Optional
+from typing import Dict, Optional
+
+from pymongo.database import Database
 
 from ..models.meeting import MEETING_TYPES, get_meeting_focus_prompt
 
 logger = logging.getLogger(__name__)
 
+
+def _clean_env_value(value: Optional[str]) -> Optional[str]:
+    """Normalize dotenv/docker env values without exposing secrets in logs."""
+    if value is None:
+        return None
+    return value.strip().strip('"').strip("'")
+
+
 # NTC AI Gateway API configuration
-NTC_API_KEY = os.getenv("NTC_API_KEY")
-NTC_API_URL = os.getenv("NTC_API_URL", "https://aigateway.ntictsolution.com/v1/chat/completions")
-NTC_MODEL = os.getenv("NTC_MODEL", "gpt-4.1")
+DEFAULT_NTC_MODEL = "ict-ollama/gemma4:31b-it-q4_K_M"
+DEFAULT_FALLBACK_MODELS = ["ict-ollama/qwen2.5:72b-instruct-q4_K_M"]
+LEGACY_PRIMARY_MODELS = {"gpt-4.1"}
+LEGACY_FALLBACK_MODEL_ALIASES = {
+    "qwen2.5:72b-instruct-q4_K_M": "ict-ollama/qwen2.5:72b-instruct-q4_K_M",
+}
+LEGACY_FALLBACK_MODELS_TO_DROP = {"scb10x/typhoon2.1-gemma3-12b"}
+
+NTC_API_KEY = _clean_env_value(os.getenv("NTC_API_KEY"))
+NTC_API_URL = _clean_env_value(os.getenv("NTC_API_URL")) or "https://aigateway.ntictsolution.com/v1/chat/completions"
+NTC_MODEL = _clean_env_value(os.getenv("NTC_MODEL")) or DEFAULT_NTC_MODEL
 
 # Threshold: transcripts longer than this use hierarchical approach
 HIERARCHICAL_THRESHOLD = 50000  # characters
 
-# Default Fallback Models
-DEFAULT_FALLBACK_MODELS = ["qwen2.5:72b-instruct-q4_K_M", "scb10x/typhoon2.1-gemma3-12b"]
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
+
+def _serialize_mongo_doc(doc: Optional[dict]) -> Optional[dict]:
+    if not doc:
+        return doc
+    doc = dict(doc)
+    if "_id" in doc:
+        doc["_id"] = str(doc["_id"])
+    return doc
+
+
+def _get_pymongo_db(mongo_service=None) -> Optional[Database]:
+    if mongo_service is None:
+        return None
+    if isinstance(mongo_service, Database):
+        return mongo_service
+    db = getattr(mongo_service, "db", None)
+    return db if isinstance(db, Database) else None
+
+
+def _fetch_llm_config(mongo_service=None, name: str = "default_fallback") -> Optional[dict]:
+    if mongo_service is None:
+        return None
+
+    if not isinstance(mongo_service, Database):
+        getter = getattr(mongo_service, "get_llm_config", None)
+        if callable(getter):
+            return getter(name)
+
+    db = _get_pymongo_db(mongo_service)
+    if db is None:
+        return None
+    return _serialize_mongo_doc(db.llm_config.find_one({"name": name}))
+
+
+def _fetch_meeting_template(mongo_service=None, meeting_type_id: int = 0) -> Optional[dict]:
+    if mongo_service is None:
+        return None
+
+    if not isinstance(mongo_service, Database):
+        getter = getattr(mongo_service, "get_meeting_template", None)
+        if callable(getter):
+            return getter(meeting_type_id)
+
+    db = _get_pymongo_db(mongo_service)
+    if db is None:
+        return None
+    return _serialize_mongo_doc(db.meeting_template.find_one({"meeting_type_id": meeting_type_id}))
+
+
+def _sanitize_gateway_error(text: str) -> str:
+    sanitized = text or ""
+    sanitized = re.sub(r"(Received API Key\s*=\s*)[^,\s]+", r"\1[redacted]", sanitized)
+    sanitized = re.sub(r"(Key Hash \(Token\)\s*=\s*)[A-Fa-f0-9]+", r"\1[redacted]", sanitized)
+    sanitized = re.sub(r"sk-[A-Za-z0-9._-]+", "sk-[redacted]", sanitized)
+    return sanitized[:1000]
+
+
+def _normalize_model_name(value: Optional[str]) -> str:
+    return (_clean_env_value(value) or "").strip()
+
+
+def _resolve_primary_model(config_model: Optional[str]) -> str:
+    model = _normalize_model_name(config_model)
+    if not model or model in LEGACY_PRIMARY_MODELS:
+        return NTC_MODEL
+    return model
+
+
+def _resolve_fallback_models(value) -> list[str]:
+    if not value:
+        return DEFAULT_FALLBACK_MODELS
+    if isinstance(value, str):
+        raw_models = [item.strip() for item in value.split(",") if item.strip()]
+    else:
+        raw_models = [str(item).strip() for item in value if item and str(item).strip()]
+
+    models: list[str] = []
+    for model in raw_models:
+        mapped = LEGACY_FALLBACK_MODEL_ALIASES.get(model, model)
+        if mapped in LEGACY_FALLBACK_MODELS_TO_DROP:
+            continue
+        if mapped not in models:
+            models.append(mapped)
+    return models or DEFAULT_FALLBACK_MODELS
 
 def _normalize_llm_config(config: Optional[dict]) -> dict:
     config = config or {}
-    fallback_models = config.get("fallback_models") or DEFAULT_FALLBACK_MODELS
-    if isinstance(fallback_models, str):
-        fallback_models = [item.strip() for item in fallback_models.split(",") if item.strip()]
-
     return {
-        "primary_model": config.get("primary_model") or NTC_MODEL,
-        "fallback_models": fallback_models or DEFAULT_FALLBACK_MODELS,
+        "primary_model": _resolve_primary_model(config.get("primary_model")),
+        "fallback_models": _resolve_fallback_models(config.get("fallback_models")),
         "temperature": config.get("temperature", 0.3),
         "max_tokens": config.get("max_tokens", 4000),
     }
 
 
 def get_llm_config(mongo_service=None) -> dict:
-    if mongo_service:
+    if mongo_service is not None:
         try:
-            config = mongo_service.get_llm_config("default_fallback")
+            config = _fetch_llm_config(mongo_service, "default_fallback")
             if config:
                 return _normalize_llm_config(config)
         except Exception as e:
@@ -61,9 +156,9 @@ def get_llm_config(mongo_service=None) -> dict:
 
 def _get_template_for_meeting(meeting_type_id: int, mongo_service=None) -> dict:
     """Fetch meeting template from DB or fallback to default."""
-    if mongo_service:
+    if mongo_service is not None:
         try:
-            template = mongo_service.get_meeting_template(meeting_type_id)
+            template = _fetch_meeting_template(mongo_service, meeting_type_id)
             if template:
                 return template
         except Exception as e:
@@ -80,10 +175,10 @@ def _get_template_for_meeting(meeting_type_id: int, mongo_service=None) -> dict:
 
 
 # ============================================================
-# GPT-4.1 API Helper
+# NTC AI Gateway API Helper
 # ============================================================
 
-def _call_gpt41(
+def _call_ntc_gateway(
     system_prompt: str,
     user_prompt: str,
     temperature: float = 0.3,
@@ -91,7 +186,7 @@ def _call_gpt41(
     timeout: int = 120,
     model_name: str = None,
 ) -> str:
-    """Call GPT-4.1 via NTC API Gateway. Returns content string or empty."""
+    """Call LLM via NTC AI Gateway (OpenAI-compatible). Returns content string or empty."""
     if not NTC_API_KEY:
         logger.error("NTC_API_KEY not set")
         return ""
@@ -112,40 +207,21 @@ def _call_gpt41(
 
     try:
         resp = requests.post(NTC_API_URL, headers=headers, json=payload, timeout=timeout)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        logger.error(f"GPT-4.1 API error: {e}")
-        return ""
-
-
-def _call_ollama(
-    model_name: str,
-    system_prompt: str,
-    user_prompt: str,
-    temperature: float = 0.3,
-    timeout: int = 120,
-) -> str:
-    """Call Ollama API. Returns content string or empty."""
-    url = f"{OLLAMA_BASE_URL.rstrip('/')}/api/chat"
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "options": {
-            "temperature": temperature,
-        },
-        "stream": False
-    }
-
-    try:
-        resp = requests.post(url, json=payload, timeout=timeout)
-        resp.raise_for_status()
-        return resp.json()["message"]["content"].strip()
-    except Exception as e:
-        logger.error(f"Ollama API error ({model_name}): {e}")
+        if resp.status_code >= 400:
+            logger.error(
+                "NTC AI Gateway API error (%s): %s",
+                resp.status_code,
+                _sanitize_gateway_error(resp.text) or resp.reason,
+            )
+            return ""
+        try:
+            content = resp.json()["choices"][0]["message"]["content"]
+            return (content or "").strip()
+        except (KeyError, IndexError, TypeError, ValueError) as e:
+            logger.error(f"NTC AI Gateway response parse error: {e}")
+            return ""
+    except requests.exceptions.RequestException as e:
+        logger.error(f"NTC AI Gateway request failed: {e}")
         return ""
 
 
@@ -158,14 +234,14 @@ def _call_llm_with_fallback(
     mongo_service=None,
     override_config: dict = None,
 ) -> str:
-    """Try primary model (NTC GPT-4.1), fallback to Ollama models if it fails."""
+    """Try primary model, fallback to other models via NTC AI Gateway."""
     config = _normalize_llm_config(override_config) if override_config else get_llm_config(mongo_service)
     effective_temperature = temperature if temperature is not None else config["temperature"]
     effective_max_tokens = max_tokens if max_tokens is not None else config["max_tokens"]
     
     # Try primary
     logger.info(f"Attempting summary with primary model: {config['primary_model']}")
-    result = _call_gpt41(
+    result = _call_ntc_gateway(
         system_prompt,
         user_prompt,
         effective_temperature,
@@ -180,7 +256,15 @@ def _call_llm_with_fallback(
     logger.warning("Primary model failed, trying fallback models...")
     for fallback_model in config["fallback_models"]:
         logger.info(f"Attempting summary with fallback model: {fallback_model}")
-        result = _call_ollama(fallback_model, system_prompt, user_prompt, effective_temperature, timeout)
+        # All configured models are served via NTC AI Gateway (OpenAI-compatible)
+        result = _call_ntc_gateway(
+            system_prompt,
+            user_prompt,
+            effective_temperature,
+            effective_max_tokens,
+            timeout,
+            model_name=fallback_model,
+        )
         if result and result.strip():
             logger.info(f"Successfully generated summary with fallback model {fallback_model}")
             return result
@@ -223,7 +307,7 @@ def _create_fallback_summary(transcription_text: str) -> str:
 
 def detect_speaker_names(transcript_with_speakers: str, speakers: list) -> dict:
     """
-    Use GPT-4.1 to detect self-introductions in the transcript
+    Use the configured LLM to detect self-introductions in the transcript
     and map speaker labels to real names.
     Returns: { "คนพูด 1": { "name": "สมชาย", "position": "ผู้จัดการ" }, ... }
     """
@@ -267,7 +351,7 @@ def detect_speaker_names(transcript_with_speakers: str, speakers: list) -> dict:
 
     user = f"ผู้พูดที่ตรวจพบ: {speakers_list}\n\nTranscript:\n{transcript_excerpt}"
 
-    content = _call_gpt41(system, user, temperature=0.1, max_tokens=500, timeout=30)
+    content = _call_ntc_gateway(system, user, temperature=0.1, max_tokens=500, timeout=30)
     if not content:
         return {}
 
@@ -296,7 +380,7 @@ def detect_speaker_names(transcript_with_speakers: str, speakers: list) -> dict:
 
 
 # ============================================================
-# Meeting Auto-Classification (from V3, adapted for GPT-4.1)
+# Meeting Auto-Classification (LLM-assisted)
 # ============================================================
 
 CLASSIFICATION_SYSTEM = """คุณคือผู้เชี่ยวชาญในการวิเคราะห์ประเภทการประชุม จากเนื้อหาการประชุมที่ได้รับ กรุณาจำแนกประเภทการประชุม:
@@ -344,7 +428,7 @@ _MEETING_KEY_TO_ID = {v: k for k, v in _MEETING_ID_TO_KEY.items()}
 
 
 def _fallback_classification(transcription: str) -> Dict:
-    """Keyword-based classification when GPT-4.1 call fails."""
+    """Keyword-based classification when the LLM call fails."""
     text_lower = transcription.lower()
     max_score = 0
     detected_type = "general_meeting"
@@ -366,11 +450,11 @@ def _fallback_classification(transcription: str) -> Dict:
 
 
 def classify_meeting_type(transcription: str) -> Dict:
-    """Classify meeting type using GPT-4.1 with keyword fallback."""
+    """Classify meeting type using the configured LLM with keyword fallback."""
     sample = transcription[:5000]
     user_msg = f"วิเคราะห์และจำแนกประเภทการประชุมจาก transcript ต่อไปนี้:\n\n{sample}"
 
-    content = _call_gpt41(CLASSIFICATION_SYSTEM, user_msg, temperature=0.1, max_tokens=500, timeout=30)
+    content = _call_ntc_gateway(CLASSIFICATION_SYSTEM, user_msg, temperature=0.1, max_tokens=500, timeout=30)
     if not content:
         return _fallback_classification(transcription)
 
@@ -391,7 +475,7 @@ def classify_meeting_type(transcription: str) -> Dict:
 def split_text_into_chunks(text: str, max_tokens: int = 30000) -> list[str]:
     """
     Split text into chunks with smart boundary detection.
-    GPT-4.1 has 1M context window so we use larger chunks than Ollama.
+    NTC Gateway models have large context windows, so we use larger chunks.
     """
     words = text.split()
     max_words = int(max_tokens * 0.75)  # 1 token ≈ 0.75 Thai words
@@ -923,4 +1007,3 @@ def summarize_with_agendas(
 
     logger.info(f"Agenda-aware summarization complete: {len(enriched)} agendas")
     return executive_summary, enriched
-

@@ -1,10 +1,11 @@
 import { useEffect } from 'react'
 import { useTheme } from '../contexts/ThemeContext'
+import Icon from './ui/Icon'
 
 const THEME_OPTIONS = [
-    { id: 'light', icon: '☀️', label: 'สว่าง', hint: 'ใช้ธีมสีอ่อนเสมอ' },
-    { id: 'dark', icon: '🌙', label: 'มืด', hint: 'ใช้ธีมสีเข้มเสมอ' },
-    { id: 'system', icon: '🖥️', label: 'ระบบ', hint: 'ปรับตามการตั้งค่าของอุปกรณ์' },
+    { id: 'light', icon: 'sun', label: 'สว่าง', hint: 'ใช้ธีมสีอ่อนเสมอ' },
+    { id: 'dark', icon: 'moon', label: 'มืด', hint: 'ใช้ธีมสีเข้มเสมอ' },
+    { id: 'system', icon: 'monitor', label: 'ระบบ', hint: 'ปรับตามการตั้งค่าของอุปกรณ์' },
 ]
 
 function SettingsModal({ isOpen, onClose }) {
@@ -36,14 +37,14 @@ function SettingsModal({ isOpen, onClose }) {
             >
                 <header className="settings-header">
                     <h2 id="settings-title" className="settings-title">
-                        <span>⚙️</span> ตั้งค่า
+                        <Icon name="settings" /> ตั้งค่า
                     </h2>
                     <button
                         className="settings-close"
                         onClick={onClose}
                         aria-label="ปิด"
                     >
-                        ✕
+                        <Icon name="x-circle" />
                     </button>
                 </header>
 
@@ -51,7 +52,7 @@ function SettingsModal({ isOpen, onClose }) {
                     {/* ── Appearance section ── */}
                     <section className="settings-section">
                         <h3 className="settings-section-title">
-                            <span className="settings-section-icon">🎨</span>
+                            <Icon name="palette" className="settings-section-icon" />
                             ธีมการแสดงผล
                         </h3>
                         <p className="settings-section-desc">
@@ -64,11 +65,11 @@ function SettingsModal({ isOpen, onClose }) {
                                     className={`settings-theme-card ${theme === opt.id ? 'active' : ''}`}
                                     onClick={() => setTheme(opt.id)}
                                 >
-                                    <span className="settings-theme-icon">{opt.icon}</span>
+                                    <Icon name={opt.icon} className="settings-theme-icon" />
                                     <span className="settings-theme-label">{opt.label}</span>
                                     <span className="settings-theme-hint">{opt.hint}</span>
                                     {theme === opt.id && (
-                                        <span className="settings-theme-check">✓</span>
+                                        <span className="settings-theme-check"><Icon name="check-circle" /></span>
                                     )}
                                 </button>
                             ))}
@@ -78,7 +79,7 @@ function SettingsModal({ isOpen, onClose }) {
                     {/* ── About section ── */}
                     <section className="settings-section">
                         <h3 className="settings-section-title">
-                            <span className="settings-section-icon">ℹ️</span>
+                            <Icon name="info" className="settings-section-icon" />
                             เกี่ยวกับ
                         </h3>
                         <div className="settings-about">

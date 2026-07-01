@@ -3,8 +3,24 @@
 
 db = db.getSiblingDB('timsumv3');
 
-// User collection — unique email
-db.user.createIndex({ "email": 1 }, { unique: true });
+// User collection — plaintext index supports pre-migration records only.
+// Encrypted records use a keyed blind index for equality lookups.
+db.user.createIndex(
+  { "email": 1 },
+  {
+    unique: true,
+    name: "email_legacy_unique",
+    partialFilterExpression: { "email": { $type: "string" } }
+  }
+);
+db.user.createIndex(
+  { "email_bidx": 1 },
+  {
+    unique: true,
+    name: "email_bidx_unique",
+    partialFilterExpression: { "email_bidx": { $type: "string" } }
+  }
+);
 
 // Job collection — query by user + status, auto-delete after 30 days
 db.job.createIndex({ "user_id": 1, "created_at": -1 });

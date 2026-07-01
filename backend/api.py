@@ -7,6 +7,7 @@ import tempfile
 import shutil
 import uuid
 import subprocess
+from datetime import datetime, timezone
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Depends, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
@@ -51,7 +52,7 @@ from app.models.user import UserData
 # Initialize FastAPI app
 app = FastAPI(
     title="TimSumV3 API",
-    description="Merged Transcription-Summarization API with GPT-4.1",
+    description="Merged Transcription-Summarization API with configurable NTC Gateway LLM",
     version="3.0.0"
 )
 
@@ -218,14 +219,50 @@ def _seed_meeting_templates():
             mongo.update_meeting_template(template["meeting_type_id"], template)
 
 def _seed_llm_config():
-    """Seed default LLM runtime config if missing."""
-    from app.models.llm_config import get_default_llm_config
+    """Seed or normalize default LLM runtime config."""
+    from app.models.llm_config import (
+        DEFAULT_NTC_MODEL,
+        LEGACY_PRIMARY_MODELS,
+        get_default_llm_config,
+        normalize_fallback_models,
+        normalize_primary_model,
+    )
 
     mongo = app.state.mongo_service
     default_config = get_default_llm_config()
-    if not mongo.get_llm_config(default_config["name"]):
+    existing = mongo.get_llm_config(default_config["name"])
+    if not existing:
         mongo.upsert_llm_config(default_config["name"], default_config)
         print("✅ Seeded default LLM config")
+        return
+
+    current_primary = existing.get("primary_model")
+    normalized_primary = normalize_primary_model(current_primary)
+    current_fallbacks = existing.get("fallback_models")
+    normalized_fallbacks = normalize_fallback_models(current_fallbacks)
+
+    should_follow_env_model = (
+        not current_primary
+        or current_primary in LEGACY_PRIMARY_MODELS
+        or current_primary == DEFAULT_NTC_MODEL
+        or existing.get("updated_by") in (None, "system")
+    )
+
+    updates = {}
+    if should_follow_env_model and current_primary != default_config["primary_model"]:
+        updates["primary_model"] = default_config["primary_model"]
+    elif current_primary != normalized_primary:
+        updates["primary_model"] = normalized_primary
+
+    if current_fallbacks != normalized_fallbacks:
+        updates["fallback_models"] = normalized_fallbacks
+
+    if updates:
+        updates["updated_by"] = "system"
+        updates["updated_at"] = datetime.now(timezone.utc)
+        merged = {key: value for key, value in existing.items() if key != "_id"}
+        mongo.upsert_llm_config(default_config["name"], {**merged, **updates})
+        print("✅ Normalized default LLM config for NTC Gateway")
 
 def _migrate_meeting_templates_multilingual():
     """One-time migration: update all meeting templates with multilingual-aware prompts.
@@ -490,12 +527,12 @@ async def transcribe_summarize(
             quota_minutes=duration_minutes,
         )
 
-        # Fetch voice samples if voice matching is enabled
+        # Fetch voice samples if voice matching is enabled.
+        # Use `or None` so the pipeline receives None (not []) when no samples exist,
+        # keeping the intent explicit for callers that check `if voice_samples`.
         voice_samples_data = None
         if use_voice_matching:
-            voice_samples_data = mongo_service.get_voice_samples_with_embeddings(str(user.id))
-            if not voice_samples_data:
-                voice_samples_data = None  # No samples to match against
+            voice_samples_data = mongo_service.get_voice_samples_with_embeddings(str(user.id)) or None
 
         # Send task to Celery worker
         process_audio.delay(

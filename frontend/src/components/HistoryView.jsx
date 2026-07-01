@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import ResultsTabs from './ResultsTabs'
+import Icon from './ui/Icon'
 
 const API_BASE = '/api'
 
@@ -98,7 +99,7 @@ function HistoryView() {
     if (sessions.length === 0) {
         return (
             <div className="history-empty">
-                <div className="history-empty-icon">📂</div>
+                <Icon name="folder" className="history-empty-icon" />
                 <h3>ยังไม่มีประวัติการประชุม</h3>
                 <p>เมื่อคุณอัปโหลดและประมวลผลไฟล์เสียง ประวัติจะปรากฏที่นี่</p>
             </div>
@@ -114,18 +115,18 @@ function HistoryView() {
                         onClick={() => handleToggle(session._id)}
                     >
                         <div className="history-card-main">
-                            <div className="history-card-icon">🎵</div>
+                            <div className="history-card-icon"><Icon name="file-audio" /></div>
                             <div className="history-card-info">
                                 <div className="history-card-filename">{session.audio_file}</div>
                                 <div className="history-card-meta">
-                                    <span>📅 {formatDate(session.created_at)}</span>
-                                    <span>⏱️ {formatDuration(session.audio_length_seconds)}</span>
-                                    <span>👥 {session.speaker_count} คน</span>
-                                    <span>📁 {session.meeting_type_name}</span>
+                                    <span className="icon-label"><Icon name="calendar" /> {formatDate(session.created_at)}</span>
+                                    <span className="icon-label"><Icon name="clock" /> {formatDuration(session.audio_length_seconds)}</span>
+                                    <span className="icon-label"><Icon name="users" /> {session.speaker_count} คน</span>
+                                    <span className="icon-label"><Icon name="folder" /> {session.meeting_type_name}</span>
                                 </div>
                             </div>
                             <div className={`history-card-chevron ${expandedId === session._id ? 'open' : ''}`}>
-                                ▼
+                                <Icon name="chevron-down" />
                             </div>
                         </div>
                         {session.summary && (

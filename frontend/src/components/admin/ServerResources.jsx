@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import Icon from '../ui/Icon';
 
 const ServerResources = () => {
   const { token, user } = useAuth();
@@ -79,7 +80,7 @@ const ServerResources = () => {
           display: 'flex', alignItems: 'center', gap: '0.4rem',
           marginBottom: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem',
         }}>
-          <span>{icon}</span>
+          <Icon name={icon} />
           <span style={{ fontWeight: 600 }}>{label}</span>
         </div>
         <div style={{ position: 'relative', width: circleSize, height: circleSize }}>
@@ -128,7 +129,7 @@ const ServerResources = () => {
           }}
           title="รีเฟรชข้อมูล"
         >
-          {loading ? '⏳' : '🔄'} รีเฟรช
+          <span className="icon-label"><Icon name="refresh" className={loading ? 'ui-icon-spin' : ''} /> รีเฟรช</span>
         </button>
 
         {(user?.role === 'admin' || user?.role === 'superadmin') && (
@@ -142,7 +143,7 @@ const ServerResources = () => {
               fontFamily: 'var(--font-thai)', opacity: restarting ? 0.5 : 1,
             }}
           >
-            ⚡ {restarting ? 'กำลังรีสตาร์ท...' : 'รีสตาร์ท Ollama'}
+            <span className="icon-label"><Icon name={restarting ? 'refresh' : 'zap'} className={restarting ? 'ui-icon-spin' : ''} /> {restarting ? 'กำลังรีสตาร์ท...' : 'รีสตาร์ท Ollama'}</span>
           </button>
         )}
       </div>
@@ -164,18 +165,18 @@ const ServerResources = () => {
             <CircleGauge
               percent={resources.cpu_percent}
               label="CPU"
-              icon="⚙️"
+              icon="cpu"
             />
             <CircleGauge
               percent={resources.memory.percent}
               label="RAM"
-              icon="🧠"
+              icon="server"
               subText={`${resources.memory.used_gb} / ${resources.memory.total_gb} GB`}
             />
             <CircleGauge
               percent={resources.disk.percent}
               label="Disk"
-              icon="💾"
+              icon="hard-drive"
               subText={`${resources.disk.used_gb} / ${resources.disk.total_gb} GB`}
             />
           </div>

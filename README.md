@@ -240,14 +240,17 @@ sudo docker compose -f docker-compose.yml up -d
 |:-----:|---------|:------:|:--------:|
 | 1-7 | Auth, Package, Profile, Custom Prompt | ✅ Done | - |
 | 12 | Admin Dashboard Enhancement (Analytics, Package CRUD) | ✅ Done | - |
-| 3.2 | PDPA — PII Encryption at Rest | 🔴 Todo | สูง |
+| 3.2 | PDPA — PII Encryption at Rest | ✅ Done | สูง |
 | 9 | PDPA Consent & Data Rights | 🔴 Todo | สูง |
 | 15 | Security Hardening & VA Pen Test | 🔴 Todo | สูง |
 | 11 | User Activity Log (Audit Trail) | 🔴 Todo | กลาง |
-| 8 | Queue Monitoring & Scheduled DB Backup | 🔴 Todo | กลาง |
+| 8 | Queue Monitoring & Encrypted Daily DB Backup | ✅ Done | กลาง |
 | 4 | Voice Enrollment (Speaker Library) | 🔴 Todo | กลาง |
 
-ดูรายละเอียดแผนงานเต็มที่ [ARTIFACT_PLANNING.md](./ARTIFACT_PLANNING.md)
+ดูรายละเอียดแผนงานเต็มที่ [docs/ARTIFACT_PLANNING.md](./docs/ARTIFACT_PLANNING.md)
+
+คู่มือเปิดใช้ encryption, migration, backup และ restore:
+[docs/ENCRYPTION_BACKUP_GUIDE.md](./docs/ENCRYPTION_BACKUP_GUIDE.md)
 
 ---
 

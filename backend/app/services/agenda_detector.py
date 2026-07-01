@@ -3,7 +3,7 @@ Agenda Detector — Hybrid Rule-based + LLM Context Analysis.
 
 Detects topic/agenda boundaries in meeting transcripts using a two-pass approach:
 1. Rule-based: Regex patterns to find explicit agenda/topic markers (e.g., "วาระที่ 1")
-2. LLM Context: GPT-4.1 analyzes semantic shifts and validates/extends rule-based anchors
+2. LLM Context: the configured gateway model analyzes semantic shifts and validates/extends rule-based anchors
 
 Supports 3 detection modes:
 - formal_agenda: Formal meetings with numbered agendas

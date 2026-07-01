@@ -358,6 +358,20 @@ def process_audio(
 
     except Exception as exc:
         logger.error(f"Job {job_id} failed: {exc}")
+
+        # Check retry count FIRST — avoid briefly flipping to "failed" before
+        # going back to "queued", which confuses the frontend status display.
+        if self.request.retries < self.max_retries:
+            logger.info(f"Job {job_id} retrying ({self.request.retries + 1}/{self.max_retries})")
+            _update_job(db, job_id, {
+                "status": "queued",
+                "current_step": "retry",
+                "progress": 0,
+                "error": None,
+            })
+            raise self.retry(exc=exc)
+
+        # All retries exhausted — mark as permanently failed and refund quota.
         _update_job(db, job_id, {
             "status": "failed",
             "current_step": "error",
@@ -365,11 +379,6 @@ def process_audio(
             "error": str(exc),
             "completed_at": datetime.now(timezone.utc),
         })
-        # Retry if attempts remaining
-        if self.request.retries < self.max_retries:
-            logger.info(f"Job {job_id} retrying ({self.request.retries + 1}/{self.max_retries})")
-            _update_job(db, job_id, {"status": "queued", "current_step": "retry", "error": None})
-            raise self.retry(exc=exc)
         try:
             _refund_job_quota_once(db, job_id)
         except Exception as refund_exc:

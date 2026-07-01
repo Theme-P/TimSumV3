@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import Icon from './ui/Icon'
 
 const API_BASE = '/api'
 
@@ -62,7 +63,7 @@ function VoiceLibrary({ token }) {
                 throw new Error(err.detail || 'อัปโหลดไม่สำเร็จ')
             }
 
-            setSuccess('เพิ่มตัวอย่างเสียงเรียบร้อยแล้ว ✨')
+            setSuccess('เพิ่มตัวอย่างเสียงเรียบร้อยแล้ว')
             setSpeakerName('')
             setSpeakerPosition('')
             setSelectedFile(null)
@@ -147,7 +148,7 @@ function VoiceLibrary({ token }) {
         return (
             <div className="voice-library">
                 <div className="voice-library-loading">
-                    <span className="voice-library-spinner">🔄</span>
+                    <Icon name="refresh" className="voice-library-spinner" />
                     กำลังโหลดคลังเสียง...
                 </div>
             </div>
@@ -160,7 +161,7 @@ function VoiceLibrary({ token }) {
             <div className="voice-library-header">
                 <div className="voice-library-header-info">
                     <h3 className="voice-library-title">
-                        <span>🎙️</span> คลังเสียง
+                        <Icon name="mic" /> คลังเสียง
                     </h3>
                     <span className="voice-library-count">{samples.length}/20 ตัวอย่าง</span>
                 </div>
@@ -169,21 +170,21 @@ function VoiceLibrary({ token }) {
                     onClick={() => setShowUpload(!showUpload)}
                     disabled={samples.length >= 20}
                 >
-                    {showUpload ? '✕ ยกเลิก' : '+ เพิ่มเสียง'}
+                    {showUpload ? 'ยกเลิก' : 'เพิ่มเสียง'}
                 </button>
             </div>
 
             {/* Status messages */}
             {error && (
                 <div className="voice-library-alert voice-library-alert-error">
-                    ❌ {error}
-                    <button onClick={() => setError(null)}>✕</button>
+                    <span className="icon-label"><Icon name="x-circle" /> {error}</span>
+                    <button onClick={() => setError(null)} aria-label="ปิดข้อความ"><Icon name="x-circle" /></button>
                 </div>
             )}
             {success && (
                 <div className="voice-library-alert voice-library-alert-success">
-                    ✅ {success}
-                    <button onClick={() => setSuccess(null)}>✕</button>
+                    <span className="icon-label"><Icon name="check-circle" /> {success}</span>
+                    <button onClick={() => setSuccess(null)} aria-label="ปิดข้อความ"><Icon name="x-circle" /></button>
                 </div>
             )}
 
@@ -206,7 +207,7 @@ function VoiceLibrary({ token }) {
                         />
                         {selectedFile ? (
                             <div className="voice-library-dropzone-file">
-                                <span className="voice-library-dropzone-icon">🎵</span>
+                                <Icon name="file-audio" className="voice-library-dropzone-icon" />
                                 <span className="voice-library-dropzone-name">{selectedFile.name}</span>
                                 <span className="voice-library-dropzone-size">
                                     {(selectedFile.size / 1024 / 1024).toFixed(1)} MB
@@ -214,7 +215,7 @@ function VoiceLibrary({ token }) {
                             </div>
                         ) : (
                             <div className="voice-library-dropzone-empty">
-                                <span className="voice-library-dropzone-icon">📁</span>
+                                <Icon name="upload" className="voice-library-dropzone-icon" />
                                 <span>ลากไฟล์เสียงมาวางที่นี่ หรือคลิกเลือกไฟล์</span>
                                 <span className="voice-library-dropzone-hint">
                                     MP3, WAV, M4A · ไม่เกิน 10 MB · ความยาว 5-30 วินาที
@@ -252,9 +253,9 @@ function VoiceLibrary({ token }) {
                         disabled={!selectedFile || !speakerName.trim() || uploading}
                     >
                         {uploading ? (
-                            <>🔄 กำลังวิเคราะห์เสียง...</>
+                            <><Icon name="refresh" className="ui-icon-spin" /> กำลังวิเคราะห์เสียง...</>
                         ) : (
-                            <>🎙️ บันทึกตัวอย่างเสียง</>
+                            <><Icon name="mic" /> บันทึกตัวอย่างเสียง</>
                         )}
                     </button>
                 </div>
@@ -263,7 +264,7 @@ function VoiceLibrary({ token }) {
             {/* Sample list */}
             {samples.length === 0 ? (
                 <div className="voice-library-empty">
-                    <span className="voice-library-empty-icon">🎤</span>
+                    <Icon name="mic" className="voice-library-empty-icon" />
                     <p className="voice-library-empty-title">ยังไม่มีตัวอย่างเสียง</p>
                     <p className="voice-library-empty-hint">
                         เพิ่มตัวอย่างเสียงของผู้พูดที่คุณรู้จัก เพื่อให้ระบบจับคู่ชื่อผู้พูดอัตโนมัติ
@@ -283,7 +284,7 @@ function VoiceLibrary({ token }) {
                                     )}
                                 </div>
                                 <div className="voice-library-item-meta">
-                                    <span>⏱️ {formatDuration(sample.duration_seconds)}</span>
+                                    <span className="icon-label"><Icon name="clock" /> {formatDuration(sample.duration_seconds)}</span>
                                     <span>·</span>
                                     <span>{new Date(sample.created_at).toLocaleDateString('th-TH')}</span>
                                 </div>
@@ -293,15 +294,17 @@ function VoiceLibrary({ token }) {
                                     className={`voice-library-play-btn ${playingId === sample._id ? 'playing' : ''}`}
                                     onClick={() => handlePlay(sample._id)}
                                     title={playingId === sample._id ? 'หยุดเล่น' : 'เล่นเสียง'}
+                                    aria-label={playingId === sample._id ? 'หยุดเล่น' : 'เล่นเสียง'}
                                 >
-                                    {playingId === sample._id ? '⏹' : '▶️'}
+                                    <Icon name={playingId === sample._id ? 'square' : 'play'} />
                                 </button>
                                 <button
                                     className="voice-library-delete-btn"
                                     onClick={() => handleDelete(sample._id)}
                                     title="ลบตัวอย่างเสียง"
+                                    aria-label="ลบตัวอย่างเสียง"
                                 >
-                                    🗑️
+                                    <Icon name="trash" />
                                 </button>
                             </div>
                         </div>

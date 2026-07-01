@@ -35,8 +35,8 @@ def get_current_user(
         if not mongo_service:
             raise HTTPException(status_code=500, detail="Auth service is unavailable")
 
-        user_doc = mongo_service.db.user.find_one(
-            {"_id": ObjectId(str(user_id))},
+        user_doc = mongo_service.get_user_document_by_id(
+            str(user_id),
             {"password": 0, "salt": 0},
         )
         if not user_doc:

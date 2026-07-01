@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
+import Icon from '../components/ui/Icon';
 import '../styles/Login.css';
 
 const API_BASE = '/api';
@@ -83,7 +84,7 @@ const ResetPassword = () => {
                         <form className="login-form-new" onSubmit={handleSubmit}>
                             {error && (
                                 <div className="login-error-new">
-                                    <span>❌</span> {error}
+                                    <Icon name="x-circle" /> {error}
                                 </div>
                             )}
 
@@ -126,7 +127,7 @@ const ResetPassword = () => {
                     ) : (
                         <div className="login-form-new">
                             <div className="login-error-new" style={{ backgroundColor: 'rgba(52, 168, 83, 0.1)', color: '#34A853', borderColor: 'rgba(52, 168, 83, 0.2)' }}>
-                                <span>✅</span> {message}
+                                <Icon name="check-circle" /> {message}
                             </div>
                             <button
                                 type="button"

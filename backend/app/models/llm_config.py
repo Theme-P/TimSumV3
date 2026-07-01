@@ -6,6 +6,50 @@ from pydantic_core import core_schema
 from pydantic import BaseModel, Field, field_validator
 from bson import ObjectId
 
+
+DEFAULT_NTC_MODEL = "ict-ollama/gemma4:31b-it-q4_K_M"
+DEFAULT_FALLBACK_MODELS = ["ict-ollama/qwen2.5:72b-instruct-q4_K_M"]
+LEGACY_PRIMARY_MODELS = {"gpt-4.1"}
+LEGACY_FALLBACK_MODEL_ALIASES = {
+    "qwen2.5:72b-instruct-q4_K_M": "ict-ollama/qwen2.5:72b-instruct-q4_K_M",
+}
+LEGACY_FALLBACK_MODELS_TO_DROP = {"scb10x/typhoon2.1-gemma3-12b"}
+
+
+def _clean_env_value(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    return value.strip().strip('"').strip("'")
+
+
+def get_env_ntc_model() -> str:
+    return _clean_env_value(os.getenv("NTC_MODEL")) or DEFAULT_NTC_MODEL
+
+
+def normalize_primary_model(value: Optional[str]) -> str:
+    model = (value or "").strip()
+    if not model or model in LEGACY_PRIMARY_MODELS:
+        return get_env_ntc_model()
+    return model
+
+
+def normalize_fallback_models(value) -> List[str]:
+    if value is None:
+        return list(DEFAULT_FALLBACK_MODELS)
+    if isinstance(value, str):
+        raw_models = [item.strip() for item in value.split(",") if item.strip()]
+    else:
+        raw_models = [str(item).strip() for item in value if item and str(item).strip()]
+
+    models: List[str] = []
+    for model in raw_models:
+        mapped = LEGACY_FALLBACK_MODEL_ALIASES.get(model, model)
+        if mapped in LEGACY_FALLBACK_MODELS_TO_DROP:
+            continue
+        if mapped not in models:
+            models.append(mapped)
+    return models or list(DEFAULT_FALLBACK_MODELS)
+
 class PyObjectId(ObjectId):
     @classmethod
     def __get_pydantic_core_schema__(cls, _source_type, _handler):
@@ -27,10 +71,8 @@ class PyObjectId(ObjectId):
 class LLMConfig(BaseModel):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
     name: str = "default_fallback"
-    primary_model: str = "gpt-4.1"
-    fallback_models: List[str] = Field(
-        default_factory=lambda: ["qwen2.5:72b-instruct-q4_K_M", "scb10x/typhoon2.1-gemma3-12b"]
-    )
+    primary_model: str = DEFAULT_NTC_MODEL
+    fallback_models: List[str] = Field(default_factory=lambda: list(DEFAULT_FALLBACK_MODELS))
     temperature: float = Field(0.3, ge=0.0, le=1.0)
     max_tokens: int = Field(4000, ge=100, le=16000)
     updated_at: Optional[datetime] = None
@@ -52,14 +94,14 @@ class LLMConfigUpdate(BaseModel):
     def primary_model_not_blank(cls, value):
         if value is not None and not value.strip():
             raise ValueError("primary_model must not be blank")
-        return value.strip() if value else value
+        return normalize_primary_model(value)
 
     @field_validator("fallback_models")
     @classmethod
     def clean_fallback_models(cls, value):
         if value is None:
             return value
-        cleaned = [item.strip() for item in value if item and item.strip()]
+        cleaned = normalize_fallback_models(value)
         if not cleaned:
             raise ValueError("fallback_models must contain at least one model")
         return cleaned
@@ -77,8 +119,8 @@ class LLMConfigTestRequest(BaseModel):
 def get_default_llm_config() -> dict:
     return {
         "name": "default_fallback",
-        "primary_model": os.getenv("NTC_MODEL", "gpt-4.1"),
-        "fallback_models": ["qwen2.5:72b-instruct-q4_K_M", "scb10x/typhoon2.1-gemma3-12b"],
+        "primary_model": get_env_ntc_model(),
+        "fallback_models": list(DEFAULT_FALLBACK_MODELS),
         "temperature": 0.3,
         "max_tokens": 4000,
         "updated_at": datetime.utcnow(),

@@ -1,12 +1,13 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
+import Icon from '../components/ui/Icon';
 
 export default function TermsOfService() {
     const navigate = useNavigate();
     return (
         <div className="policy-page">
             <div className="policy-container">
-                <button className="policy-back-btn" onClick={() => navigate(-1)}>← กลับ</button>
+                <button className="policy-back-btn icon-label" onClick={() => navigate(-1)}><Icon name="arrow-left" /> กลับ</button>
                 <h1>เงื่อนไขการใช้งาน</h1>
                 <p className="policy-version">เวอร์ชัน 1.0 | มีผลบังคับใช้: 2026-05-24</p>
 

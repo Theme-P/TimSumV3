@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import Icon from './ui/Icon'
 
 const API_BASE = '/api'
 
@@ -27,7 +28,7 @@ function MeetingTypeSelect({ value, onChange, disabled }) {
     return (
         <div className="form-group">
             <label className="form-label">
-                📁 ประเภทการประชุม
+                <span className="icon-label"><Icon name="folder" /> ประเภทการประชุม</span>
             </label>
             <div className="select-wrapper">
                 <select
@@ -49,18 +50,18 @@ function MeetingTypeSelect({ value, onChange, disabled }) {
                         ))
                     )}
                 </select>
-                <span className="select-arrow">▼</span>
+                <Icon name="chevron-down" className="select-arrow" />
             </div>
 
             {/* Show selected meeting type details */}
             {selectedType && selectedType.id > 0 && (
                 <div className="meeting-type-detail">
                     <span className="meeting-type-structure">
-                        📌 โครงสร้าง: {selectedType.structure}
+                        <span className="icon-label"><Icon name="pin" /> โครงสร้าง: {selectedType.structure}</span>
                     </span>
                     {selectedType.key_focus && (
                         <span className="meeting-type-focus">
-                            🎯 เน้น: {selectedType.key_focus}
+                            <span className="icon-label"><Icon name="target" /> เน้น: {selectedType.key_focus}</span>
                         </span>
                     )}
                 </div>
@@ -68,7 +69,7 @@ function MeetingTypeSelect({ value, onChange, disabled }) {
             {selectedType && selectedType.id === 0 && (
                 <div className="meeting-type-detail auto">
                     <span className="meeting-type-structure">
-                        🤖 AI จะวิเคราะห์เนื้อหาและเลือกประเภทให้อัตโนมัติ
+                        <span className="icon-label"><Icon name="bot" /> AI จะวิเคราะห์เนื้อหาและเลือกประเภทให้อัตโนมัติ</span>
                     </span>
                 </div>
             )}

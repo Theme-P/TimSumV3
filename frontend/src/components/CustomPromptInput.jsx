@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import Icon from './ui/Icon'
 
 const MAX_CHARS = 500
 
@@ -13,8 +14,8 @@ function CustomPromptInput({ value, onChange, disabled }) {
                 onClick={() => setExpanded(prev => !prev)}
                 disabled={disabled}
             >
-                <span className="custom-prompt-toggle-icon">{expanded ? '▾' : '▸'}</span>
-                <span className="custom-prompt-toggle-icon-emoji">🤖</span>
+                <Icon name={expanded ? 'chevron-down' : 'chevron-right'} className="custom-prompt-toggle-icon" />
+                <Icon name="bot" className="custom-prompt-toggle-assistant-icon" />
                 คำสั่งเพิ่มเติมสำหรับ AI (ไม่บังคับ)
             </button>
             {expanded && (

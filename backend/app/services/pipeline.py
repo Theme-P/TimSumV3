@@ -32,7 +32,7 @@ def clear_gpu_memory():
 
 class TranscribeSummaryPipeline:
     """
-    Combined pipeline that runs WhisperX transcription and GPT-4.1 summarization.
+    Combined pipeline that runs WhisperX transcription and configurable LLM summarization.
     Handles model loading, transcription, speaker diarization, and AI summary.
     """
     
@@ -279,7 +279,7 @@ class TranscribeSummaryPipeline:
         
         speaker_labels = list(speakers_time.keys())
         
-        # Step 4: Extract audio clips per speaker (~10s each)
+        # Step 6: Extract audio clips per speaker (~10s each)
         clip_dir = ""
         speaker_clips = {}
         clip_time = 0
@@ -299,7 +299,7 @@ class TranscribeSummaryPipeline:
         else:
             logger.info("Speaker clip extraction disabled by ENABLE_SPEAKER_CLIPS=false")
         
-        # Step: Voice enrollment matching (if voice samples provided)
+        # Step 7: Voice enrollment matching (if voice samples provided)
         voice_matches = {}
         if voice_samples and self.config.ENABLE_VOICE_MATCHING:
             logger.info(f"Attempting voice matching with {len(voice_samples)} enrolled samples...")
@@ -332,7 +332,7 @@ class TranscribeSummaryPipeline:
                 del matcher
                 clear_gpu_memory()
             except Exception as e:
-                logger.warning(f"Voice matching failed (falling back to GPT detection): {e}")
+                logger.warning(f"Voice matching failed (falling back to LLM name detection): {e}")
                 voice_matches = {}
 
             voice_match_time = time.time() - voice_match_start
@@ -342,7 +342,7 @@ class TranscribeSummaryPipeline:
             if voice_samples:
                 logger.info("Voice matching disabled by ENABLE_VOICE_MATCHING=false")
 
-        # Step: Detect speaker names from self-introductions
+        # Step 8: Detect speaker names from self-introductions
         # Only detect for speakers NOT already matched by voice enrollment
         detect_start = time.time()
         unmatched_labels = [s for s in speaker_labels if s not in voice_matches]
@@ -374,7 +374,7 @@ class TranscribeSummaryPipeline:
             logger.info("No speaker introductions detected")
         logger.info(f"Name detection completed in {detect_time:.2f}s")
         
-        # Step: Agenda detection (automatic — runs on every transcript)
+        # Step 9: Agenda detection (automatic — runs on every transcript)
         _report("detecting_agendas", 70)
         agenda_result = {"agendas": [], "detection_mode": "single_topic"}
         agenda_time = 0
@@ -395,7 +395,7 @@ class TranscribeSummaryPipeline:
             f"mode: {detection_mode}, agendas: {len(detected_agendas)}"
         )
 
-        # Step: Run summary (agenda-aware or standard)
+        # Step 10: Run summary (agenda-aware or standard)
         _report("summarizing", 75)
         meeting_info = MEETING_TYPES.get(meeting_type_id, MEETING_TYPES[0])
         logger.info(f"Running AI Summary ({meeting_info['thai']})...")
@@ -518,7 +518,7 @@ class TranscribeSummaryPipeline:
         
         # Summary
         print("\n" + "=" * 60)
-        print("🤖 AI SUMMARY (GPT-4.1)")
+        print("🤖 AI SUMMARY (LLM)")
         print("=" * 60)
         print(output['summary'])
         

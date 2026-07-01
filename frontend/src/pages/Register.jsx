@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import Icon from '../components/ui/Icon';
 import '../styles/Login.css';
 
 const API_BASE = '/api';
@@ -85,9 +86,9 @@ const Register = () => {
                         <div style={{
                             width: 64, height: 64, borderRadius: '50%',
                             background: '#f0fdf4', display: 'flex', alignItems: 'center',
-                            justifyContent: 'center', margin: '0 auto 1rem', fontSize: '2rem'
+                            justifyContent: 'center', margin: '0 auto 1rem', color: '#2d8a4e'
                         }}>
-                            &#10003;
+                            <Icon name="check-circle" size={34} />
                         </div>
                         <h1 className="login-welcome-title">ลงทะเบียนสำเร็จ</h1>
                         <p className="login-welcome-subtitle" style={{ marginBottom: '1.5rem' }}>
@@ -140,7 +141,7 @@ const Register = () => {
                     <form className="login-form-new" onSubmit={handleSubmit}>
                         {error && (
                             <div className="login-error-new">
-                                <span>&#10060;</span> {error}
+                                <Icon name="x-circle" /> {error}
                             </div>
                         )}
 

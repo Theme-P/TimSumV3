@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import Icon from './ui/Icon'
 
 function FileUploader({ file, onFileSelect, disabled }) {
     const [isDragOver, setIsDragOver] = useState(false)
@@ -73,7 +74,7 @@ function FileUploader({ file, onFileSelect, disabled }) {
     if (file) {
         return (
             <div className="file-selected">
-                <span>🎵</span>
+                <Icon name="file-audio" />
                 <span className="file-selected-name">
                     {file.name} ({formatFileSize(file.size)})
                 </span>
@@ -81,8 +82,9 @@ function FileUploader({ file, onFileSelect, disabled }) {
                     className="file-remove-btn"
                     onClick={handleRemove}
                     disabled={disabled}
+                    aria-label="นำไฟล์ออก"
                 >
-                    ✕
+                    <Icon name="x-circle" />
                 </button>
             </div>
         )
@@ -105,12 +107,7 @@ function FileUploader({ file, onFileSelect, disabled }) {
                 disabled={disabled}
             />
             <div className="file-upload-icon">
-                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <rect x="9" y="2" width="6" height="11" rx="3" fill="#9ca3af"/>
-                    <path d="M5 11a7 7 0 0 0 14 0" stroke="#9ca3af" strokeWidth="1.8" strokeLinecap="round"/>
-                    <line x1="12" y1="18" x2="12" y2="22" stroke="#9ca3af" strokeWidth="1.8" strokeLinecap="round"/>
-                    <line x1="8" y1="22" x2="16" y2="22" stroke="#9ca3af" strokeWidth="1.8" strokeLinecap="round"/>
-                </svg>
+                <Icon name="upload" size={40} />
             </div>
             <p className="file-upload-text">
                 ลากไฟล์มาวางที่นี่ หรือคลิกเพื่อเลือกไฟล์

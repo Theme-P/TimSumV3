@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Link } from 'react-router-dom';
+import Icon from '../components/ui/Icon';
 import PackageManager from '../components/admin/PackageManager';
 
 const API_BASE = '/api';
@@ -266,12 +267,12 @@ function AdminDashboard() {
                                 </div>
                                 <div className="nav-dropdown-divider" />
                                 <button className="nav-dropdown-item">
-                                    <span className="nav-dropdown-item-icon">&#128100;</span>
+                                    <Icon name="user" className="nav-dropdown-item-icon" />
                                     โปรไฟล์
                                 </button>
                                 <div className="nav-dropdown-divider" />
                                 <button className="nav-dropdown-item nav-dropdown-logout" onClick={logout}>
-                                    <span className="nav-dropdown-item-icon">&#8594;</span>
+                                    <Icon name="logout" className="nav-dropdown-item-icon" />
                                     ออกจากระบบ
                                 </button>
                             </div>
@@ -380,7 +381,7 @@ function AdminDashboard() {
                     </div>
                 ) : users.length === 0 ? (
                     <div className="history-empty">
-                        <div className="history-empty-icon">&#128101;</div>
+                        <Icon name="users" className="history-empty-icon" />
                         <h3>ไม่มีผู้ใช้ในหมวดนี้</h3>
                     </div>
                 ) : (
@@ -419,6 +420,10 @@ function AdminDashboard() {
                                                         {user.role}
                                                     </span>
                                                 )}
+                                                <span className={`admin-user-package ${user.current_package ? '' : 'admin-user-package-empty'}`}>
+                                                    <span className="admin-user-package-dot" />
+                                                    {user.current_package?.name || 'ยังไม่มีแพ็กเกจ'}
+                                                </span>
                                             </div>
                                             <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginTop: 4 }}>
                                                 {user.email}
@@ -437,10 +442,10 @@ function AdminDashboard() {
                                             {user.status === 'approved' && user.role === 'user' && packages.length > 0 && (
                                                 <select
                                                     disabled={assigningPkg === user._id}
+                                                    value={user.current_package?._id || ''}
                                                     onChange={(e) => {
                                                         if (e.target.value) handleAssignPackage(user._id, e.target.value);
                                                     }}
-                                                    defaultValue=""
                                                     style={{
                                                         padding: '0.4rem 0.6rem', borderRadius: 8, fontSize: '0.78rem',
                                                         border: '1px solid var(--border-color)', background: 'var(--surface-elevated)',

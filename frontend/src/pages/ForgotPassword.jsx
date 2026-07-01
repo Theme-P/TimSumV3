@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import Icon from '../components/ui/Icon';
 import '../styles/Login.css'; // Reuse login styles
 
 const API_BASE = '/api';
@@ -64,12 +65,12 @@ const ForgotPassword = () => {
                     <form className="login-form-new" onSubmit={handleSubmit}>
                         {error && (
                             <div className="login-error-new">
-                                <span>❌</span> {error}
+                                <Icon name="x-circle" /> {error}
                             </div>
                         )}
                         {message && (
                             <div className="login-error-new" style={{ backgroundColor: 'rgba(52, 168, 83, 0.1)', color: '#34A853', borderColor: 'rgba(52, 168, 83, 0.2)' }}>
-                                <span>✅</span> {message}
+                                <Icon name="check-circle" /> {message}
                             </div>
                         )}
 

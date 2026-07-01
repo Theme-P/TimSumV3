@@ -1,4 +1,5 @@
 import React from 'react'
+import Icon from './ui/Icon'
 
 /**
  * AgendaTimeline — Displays detected meeting agendas as a vertical timeline.
@@ -24,7 +25,7 @@ export default function AgendaTimeline({ agendas, detectionMode }) {
     return (
         <div className="agenda-timeline">
             <div className="agenda-header">
-                <h3>📋 {detectionMode === 'formal_agenda' ? 'วาระการประชุม' : 'หัวข้อการประชุม'}</h3>
+                <h3 className="icon-label"><Icon name="clipboard-list" /> {detectionMode === 'formal_agenda' ? 'วาระการประชุม' : 'หัวข้อการประชุม'}</h3>
                 <span className="agenda-mode-badge">{modeBadge} {agendas.length} รายการ</span>
             </div>
 
@@ -67,7 +68,7 @@ export default function AgendaTimeline({ agendas, detectionMode }) {
 
                             {agenda.decisions && agenda.decisions.length > 0 && (
                                 <div className="agenda-section decisions">
-                                    <span className="agenda-section-label">✅ มติ/ข้อตกลง</span>
+                                    <span className="agenda-section-label icon-label"><Icon name="check-circle" /> มติ/ข้อตกลง</span>
                                     <ul>
                                         {agenda.decisions.map((d, dIdx) => (
                                             <li key={dIdx}>{d}</li>
@@ -78,7 +79,7 @@ export default function AgendaTimeline({ agendas, detectionMode }) {
 
                             {agenda.action_items && agenda.action_items.length > 0 && (
                                 <div className="agenda-section action-items">
-                                    <span className="agenda-section-label">📌 งานมอบหมาย</span>
+                                    <span className="agenda-section-label icon-label"><Icon name="pin" /> งานมอบหมาย</span>
                                     <ul>
                                         {agenda.action_items.map((a, aIdx) => (
                                             <li key={aIdx}>{a}</li>

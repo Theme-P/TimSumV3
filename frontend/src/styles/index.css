@@ -887,6 +887,36 @@ body {
   border: 1px solid rgba(192, 57, 43, 0.22);
 }
 
+.admin-user-package {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.38rem;
+    min-height: 24px;
+    padding: 0.15rem 0.58rem;
+    border: 1px solid rgba(49, 160, 92, 0.28);
+    border-radius: 999px;
+    background: rgba(49, 160, 92, 0.1);
+    color: #49b875;
+    font-size: 0.72rem;
+    font-weight: 700;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.admin-user-package-dot {
+    width: 6px;
+    height: 6px;
+    flex: 0 0 6px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.admin-user-package-empty {
+    border-color: var(--border-color);
+    background: var(--surface-elevated);
+    color: var(--text-muted);
+}
+
 @media (max-width: 640px) {
   .transcript-toolbar {
     align-items: stretch;
@@ -1534,8 +1564,6 @@ body {
 }
 
 .email-input-row {
-  display: flex;
-  gap: 0.5rem;
   margin-bottom: 0.5rem;
 }
 
@@ -1562,11 +1590,6 @@ body {
 .email-input:disabled {
   opacity: 0.6;
   cursor: not-allowed;
-}
-
-.email-send-btn {
-  white-space: nowrap;
-  flex-shrink: 0;
 }
 
 .email-status {
@@ -1965,7 +1988,7 @@ body {
   width: 0.9rem;
 }
 
-.custom-prompt-toggle-icon-emoji {
+.custom-prompt-toggle-assistant-icon {
   font-size: 0.95rem;
 }
 
@@ -3017,4 +3040,28 @@ body {
     height: 26px;
     font-size: 0.75rem;
   }
+}
+/* Shared outline icon system — consistent across user and admin surfaces. */
+.ui-icon {
+    display: inline-block;
+    flex: 0 0 auto;
+    vertical-align: -0.15em;
+}
+
+.icon-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.ui-icon-spin {
+    animation: ui-icon-spin 0.9s linear infinite;
+}
+
+.icon-rotate-180 {
+    transform: rotate(180deg);
+}
+
+@keyframes ui-icon-spin {
+    to { transform: rotate(360deg); }
 }

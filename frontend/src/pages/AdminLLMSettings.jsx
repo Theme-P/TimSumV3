@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Link } from 'react-router-dom';
+import Icon from '../components/ui/Icon';
 
 const API_BASE = '/api';
 
 const DEFAULT_LLM_FORM = {
-    primary_model: 'gpt-4.1',
-    fallback_models: 'qwen2.5:72b-instruct-q4_K_M\nscb10x/typhoon2.1-gemma3-12b',
+    primary_model: 'ict-ollama/gemma4:31b-it-q4_K_M',
+    fallback_models: 'ict-ollama/qwen2.5:72b-instruct-q4_K_M',
     temperature: 0.3,
     max_tokens: 4000,
 };
@@ -301,7 +302,7 @@ function AdminLLMSettings() {
                                 </div>
                                 <div className="nav-dropdown-divider" />
                                 <button className="nav-dropdown-item nav-dropdown-logout" onClick={logout}>
-                                    <span className="nav-dropdown-item-icon">&#8594;</span>
+                                    <Icon name="logout" className="nav-dropdown-item-icon" />
                                     ออกจากระบบ
                                 </button>
                             </div>
@@ -331,7 +332,7 @@ function AdminLLMSettings() {
                         <div className="llm-sidebar-note">
                             <span className="llm-note-label">Config</span>
                             <strong>default_fallback</strong>
-                            <p>ใช้กับการสรุป, ทดสอบ prompt และ fallback ผ่าน Ollama</p>
+                            <p>ใช้กับการสรุป, ทดสอบ prompt และ fallback ผ่าน NTC Gateway</p>
                         </div>
                     )}
 
@@ -366,7 +367,7 @@ function AdminLLMSettings() {
                         <div className="llm-panel-header">
                             <div>
                                 <h2>ตั้งค่า Runtime LLM</h2>
-                                <p>กำหนด primary model บน NTC Gateway และ fallback models สำหรับ Ollama</p>
+                                <p>กำหนด primary model และ fallback models บน NTC Gateway ตามสิทธิ์ของ API key</p>
                             </div>
                             <button className="btn-primary llm-save-btn" onClick={handleSaveLlmConfig} disabled={llmSaving || llmLoading}>
                                 {llmSaving ? 'กำลังบันทึก...' : 'บันทึก Config'}

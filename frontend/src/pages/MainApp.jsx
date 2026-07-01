@@ -10,6 +10,7 @@ import SettingsModal from '../components/SettingsModal'
 import ProfileModal from '../components/ProfileModal'
 import PackageBadge from '../components/PackageBadge'
 import CustomPromptInput from '../components/CustomPromptInput'
+import Icon from '../components/ui/Icon'
 
 const API_BASE = '/api'
 
@@ -43,8 +44,6 @@ function MainApp() {
     const [showDropdown, setShowDropdown] = useState(false)
     const [activeView, setActiveView] = useState('upload')
     const [emailRecipient, setEmailRecipient] = useState('')
-    const [emailSending, setEmailSending] = useState(false)
-    const [emailStatus, setEmailStatus] = useState(null)
     const [autoEmailStatus, setAutoEmailStatus] = useState(null)
     const [autoEmailError, setAutoEmailError] = useState(null)
     const [showSettings, setShowSettings] = useState(false)
@@ -62,8 +61,15 @@ function MainApp() {
     const { token, logout } = useAuth()
     const userInfo = token ? getUserInfo(token) : { initials: 'ผู้', username: '', email: '' }
 
+    const emailPrefilledRef = useRef(false)
     useEffect(() => {
-        if (userInfo.email && !emailRecipient) setEmailRecipient(userInfo.email)
+        // Pre-fill email only once on first load — do not reset if the user has
+        // already edited the field. Using a ref avoids adding emailRecipient to
+        // deps which would re-run this effect every time the user types.
+        if (userInfo.email && !emailPrefilledRef.current) {
+            setEmailRecipient(userInfo.email)
+            emailPrefilledRef.current = true
+        }
     }, [userInfo.email])
 
     useEffect(() => {
@@ -126,7 +132,6 @@ function MainApp() {
         setSpeakerMapping({})
         setSpeakerPanelCollapsed(false)
         setSessionId(null)
-        setEmailStatus(null)
         setAutoEmailStatus(null)
         setAutoEmailError(null)
         resultLoadedRef.current = false
@@ -210,7 +215,6 @@ function MainApp() {
         setProgress(0)
         setAutoEmailStatus(null)
         setAutoEmailError(null)
-        setEmailStatus(null)
         resultLoadedRef.current = false
         pollErrorCountRef.current = 0
         if (pollTimeoutRef.current) {
@@ -255,43 +259,6 @@ function MainApp() {
     const handleMappingChange = useCallback((mapping) => {
         setSpeakerMapping(mapping)
     }, [])
-
-    const handleSendEmail = async () => {
-        if (!result || !emailRecipient.trim()) return
-        setEmailSending(true)
-        setEmailStatus(null)
-        try {
-            const fileNameNoExt = (file?.name || result.audio_file || 'meeting').replace(/\.[^.]+$/, '')
-            const payload = {
-                recipient_email: emailRecipient.trim(),
-                file_name: fileNameNoExt,
-                summary: displayResult.summary,
-                segments: displayResult.transcript.segments,
-                audio_file: displayResult.audio_file || '',
-                audio_length_seconds: displayResult.audio_length_seconds || 0,
-                speaker_summary: displayResult.transcript.speaker_summary,
-                meeting_type_id: meetingType,
-                agendas: displayResult.agendas || [],
-            }
-            const res = await fetch(`${API_BASE}/email-results`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`,
-                },
-                body: JSON.stringify(payload),
-            })
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({}))
-                throw new Error(err.detail || 'ส่งอีเมลไม่สำเร็จ')
-            }
-            setEmailStatus({ type: 'success', message: `ส่งไปยัง ${emailRecipient.trim()} สำเร็จ` })
-        } catch (err) {
-            setEmailStatus({ type: 'error', message: err.message || 'เกิดข้อผิดพลาดในการส่งอีเมล' })
-        } finally {
-            setEmailSending(false)
-        }
-    }
 
     const displayResult = useMemo(() => {
         if (!result) return null
@@ -370,7 +337,7 @@ function MainApp() {
                                         setShowDropdown(false)
                                     }}
                                 >
-                                    <span className="nav-dropdown-item-icon">👤</span>
+                                    <Icon name="user" className="nav-dropdown-item-icon" />
                                     โปรไฟล์
                                 </button>
                                 <button
@@ -380,12 +347,12 @@ function MainApp() {
                                         setShowDropdown(false)
                                     }}
                                 >
-                                    <span className="nav-dropdown-item-icon">⚙️</span>
+                                    <Icon name="settings" className="nav-dropdown-item-icon" />
                                     ตั้งค่า
                                 </button>
                                 <div className="nav-dropdown-divider" />
                                 <button className="nav-dropdown-item nav-dropdown-logout" onClick={logout}>
-                                    <span className="nav-dropdown-item-icon">→</span>
+                                    <Icon name="logout" className="nav-dropdown-item-icon" />
                                     ออกจากระบบ
                                 </button>
                             </div>
@@ -437,7 +404,7 @@ function MainApp() {
                                             onChange={(e) => setUseVoiceMatching(e.target.checked)}
                                             disabled={isProcessing}
                                         />
-                                        <span className="voice-match-toggle-icon">🎙️</span>
+                                        <Icon name="mic" className="voice-match-toggle-icon" />
                                         <span>ใช้คลังเสียงจับคู่ผู้พูดอัตโนมัติ</span>
                                     </label>
                                     <p className="voice-match-toggle-hint">
@@ -460,52 +427,33 @@ function MainApp() {
                                     placeholder="user@company.co.th"
                                     value={emailRecipient}
                                     onChange={(e) => setEmailRecipient(e.target.value)}
-                                    disabled={emailSending}
                                 />
-                                <button
-                                    className="btn btn-primary email-send-btn"
-                                    onClick={handleSendEmail}
-                                    disabled={!result || !emailRecipient.trim() || emailSending}
-                                    title={result ? 'ส่งซ้ำพร้อมชื่อ Speaker ที่แก้ไข' : 'กดได้หลังประมวลผลเสร็จ'}
-                                >
-                                    {emailSending
-                                        ? '⏳ กำลังส่ง...'
-                                        : (autoEmailStatus === 'sent' ? '📧 ส่งซ้ำ' : '📧 ส่ง')}
-                                </button>
                             </div>
 
                             {/* Auto-send status (from worker, via job polling) */}
                             {autoEmailStatus === 'queued' && (
                                 <p className="email-status email-status-info">
-                                    📬 ระบบจะส่งอีเมลให้อัตโนมัติเมื่อประมวลผลเสร็จ
+                                    <span className="icon-label"><Icon name="mail" /> ระบบจะส่งอีเมลให้อัตโนมัติเมื่อประมวลผลเสร็จ</span>
                                 </p>
                             )}
                             {autoEmailStatus === 'sending' && (
                                 <p className="email-status email-status-info">
-                                    ⏳ กำลังส่งอีเมล...
+                                    <span className="icon-label"><Icon name="refresh" className="ui-icon-spin" /> กำลังส่งอีเมล...</span>
                                 </p>
                             )}
                             {autoEmailStatus === 'sent' && (
                                 <p className="email-status email-status-success">
-                                    ✅ ส่งอีเมลให้ {emailRecipient} เรียบร้อยแล้ว
+                                    <span className="icon-label"><Icon name="check-circle" /> ส่งอีเมลให้ {emailRecipient} เรียบร้อยแล้ว</span>
                                 </p>
                             )}
                             {autoEmailStatus === 'failed' && (
                                 <p className="email-status email-status-error">
-                                    ❌ ส่งอีเมลอัตโนมัติไม่สำเร็จ{autoEmailError ? ` — ${autoEmailError}` : ''}
-                                </p>
-                            )}
-
-                            {/* Manual resend status */}
-                            {emailStatus && (
-                                <p className={`email-status email-status-${emailStatus.type}`}>
-                                    {emailStatus.type === 'success' ? '✅' : '❌'} {emailStatus.message}
+                                    <span className="icon-label"><Icon name="x-circle" /> ส่งอีเมลอัตโนมัติไม่สำเร็จ{autoEmailError ? ` — ${autoEmailError}` : ''}</span>
                                 </p>
                             )}
 
                             <p className="email-hint">
                                 กรอกอีเมลก่อนกด "เริ่มประมวลผล" — ระบบจะส่งไฟล์ Transcript และ Summary (DOCX) ให้อัตโนมัติเมื่อเสร็จ
-                                {autoEmailStatus === 'sent' && ' ปุ่ม "ส่งซ้ำ" ใช้ส่งซ้ำหลังแก้ชื่อ Speaker'}
                             </p>
                         </div>
 
@@ -515,7 +463,10 @@ function MainApp() {
                             onClick={handleSubmit}
                             disabled={!file || isProcessing}
                         >
-                            {isProcessing ? '⏳ กำลังประมวลผล...' : '✨ เริ่มประมวลผล'}
+                            <span className="icon-label">
+                                <Icon name={isProcessing ? 'refresh' : 'sparkles'} className={isProcessing ? 'ui-icon-spin' : ''} />
+                                {isProcessing ? 'กำลังประมวลผล...' : 'เริ่มประมวลผล'}
+                            </span>
                         </button>
 
                         {/* Processing status */}
@@ -528,7 +479,7 @@ function MainApp() {
                         {/* Error */}
                         {error && (
                             <div className="upload-error">
-                                <span>❌</span>
+                                <Icon name="x-circle" />
                                 <span>{error}</span>
                             </div>
                         )}

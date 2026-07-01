@@ -86,10 +86,11 @@ _STATUS_MESSAGES = {
 async def login(req: LoginRequest, mongo_service: MongoService = Depends(get_mongo_service)):
     """Authenticate a user and return a JWT token."""
     try:
-        user = mongo_service.authenticate_user(req.email, req.password)
+        email = req.email.strip().lower()
+        user = mongo_service.authenticate_user(email, req.password)
         if not user:
             # Check if user exists but has non-approved status
-            status = mongo_service.get_user_status(req.email)
+            status = mongo_service.get_user_status(email)
             if status and status != USER_STATUS_APPROVED:
                 msg = _STATUS_MESSAGES.get(status, "ไม่สามารถเข้าสู่ระบบได้")
                 raise HTTPException(status_code=403, detail=msg)
@@ -100,8 +101,6 @@ async def login(req: LoginRequest, mongo_service: MongoService = Depends(get_mon
         expire_hours = int(os.getenv("JWT_EXPIRE_HOURS", "8"))
         token_payload = {
             "id": str(user.id),
-            "username": user.username,
-            "email": user.email,
             "role": user.role,
             "exp": datetime.now(timezone.utc) + timedelta(hours=expire_hours),
         }
@@ -116,7 +115,7 @@ async def login(req: LoginRequest, mongo_service: MongoService = Depends(get_mon
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Login error: {e}")
+        logger.exception("Login error for {}: {}", req.email.strip().lower(), e)
         raise HTTPException(status_code=500, detail="An unexpected error occurred")
 
 
@@ -215,7 +214,7 @@ async def forgot_password(
             
         token = secrets.token_urlsafe(32)
         expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
-        mongo_service.create_password_reset_token(req.email, token, expires_at)
+        mongo_service.create_password_reset_token(str(user.id), token, expires_at)
         
         # Determine base URL for reset link
         origin = request.headers.get("origin", "")
@@ -254,7 +253,14 @@ async def reset_password(
         if not token_doc:
             raise HTTPException(status_code=400, detail="ลิงก์รีเซ็ตรหัสผ่านไม่ถูกต้องหรือหมดอายุแล้ว")
             
-        user = mongo_service.get_user_by_email(token_doc["email"])
+        if token_doc.get("user_id"):
+            try:
+                user = mongo_service.get_user_by_id(token_doc["user_id"])
+            except ValueError:
+                user = None
+        else:
+            # Compatibility for reset records created before token hashing.
+            user = mongo_service.get_user_by_email(token_doc.get("email", ""))
         if not user:
             raise HTTPException(status_code=400, detail="ไม่พบผู้ใช้ในระบบ")
             

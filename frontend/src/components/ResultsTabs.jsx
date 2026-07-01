@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import AgendaTimeline from './AgendaTimeline'
+import Icon from './ui/Icon'
 
 const API_BASE = '/api'
 const TRANSCRIPT_PAGE_SIZE = 150
@@ -131,9 +132,9 @@ function ResultsTabs({ result, meetingType = 0, token }) {
         <div>
             {/* Processing Info */}
             <div className="results-meta">
-                ⏱️ ประมวลผลเสร็จใน {(result.processing_time?.total || 0).toFixed(1)} วินาที
-                | 🎵 ความยาวเสียง {formatTime(result.audio_length_seconds)}
-                | 📝 {transcriptSegments.length.toLocaleString()} segments
+                <span className="icon-label"><Icon name="clock" /> ประมวลผล {(result.processing_time?.total || 0).toFixed(1)} วินาที</span>
+                <span className="icon-label"><Icon name="file-audio" /> ความยาว {formatTime(result.audio_length_seconds)}</span>
+                <span className="icon-label"><Icon name="file-text" /> {transcriptSegments.length.toLocaleString()} segments</span>
             </div>
 
             {/* Tabs */}
@@ -142,27 +143,27 @@ function ResultsTabs({ result, meetingType = 0, token }) {
                     className={`tab ${activeTab === 'transcript' ? 'active' : ''}`}
                     onClick={() => setActiveTab('transcript')}
                 >
-                    📝 Transcript
+                    <span className="icon-label"><Icon name="file-text" /> Transcript</span>
                 </button>
                 <button
                     className={`tab ${activeTab === 'summary' ? 'active' : ''}`}
                     onClick={() => setActiveTab('summary')}
                 >
-                    📊 Summary
+                    <span className="icon-label"><Icon name="bar-chart" /> Summary</span>
                 </button>
                 {result.agendas && result.agendas.length > 0 && (
                     <button
                         className={`tab ${activeTab === 'agendas' ? 'active' : ''}`}
                         onClick={() => setActiveTab('agendas')}
                     >
-                        📋 วาระ ({result.agendas.length})
+                        <span className="icon-label"><Icon name="clipboard-list" /> วาระ ({result.agendas.length})</span>
                     </button>
                 )}
                 <button
                     className={`tab ${activeTab === 'speakers' ? 'active' : ''}`}
                     onClick={() => setActiveTab('speakers')}
                 >
-                    👥 Speakers
+                    <span className="icon-label"><Icon name="users" /> Speakers</span>
                 </button>
             </div>
 
@@ -272,27 +273,33 @@ function ResultsTabs({ result, meetingType = 0, token }) {
                     className="btn btn-secondary"
                     onClick={() => handleCopyText(transcriptText, 'Transcript')}
                 >
-                    📋 คัดลอก Transcript
+                    <span className="icon-label"><Icon name="clipboard-list" /> คัดลอก Transcript</span>
                 </button>
                 <button
                     className="btn btn-secondary"
                     onClick={() => handleCopyText(result.summary, 'Summary')}
                 >
-                    📋 คัดลอก Summary
+                    <span className="icon-label"><Icon name="clipboard-list" /> คัดลอก Summary</span>
                 </button>
                 <button
                     className="btn btn-primary"
                     onClick={handleDownloadTranscriptDocx}
                     disabled={downloading === 'transcript'}
                 >
-                    {downloading === 'transcript' ? '⏳ กำลังสร้าง...' : '📥 ดาวน์โหลด Transcript (DOCX)'}
+                    <span className="icon-label">
+                        <Icon name={downloading === 'transcript' ? 'refresh' : 'download'} className={downloading === 'transcript' ? 'ui-icon-spin' : ''} />
+                        {downloading === 'transcript' ? 'กำลังสร้าง...' : 'ดาวน์โหลด Transcript (DOCX)'}
+                    </span>
                 </button>
                 <button
                     className="btn btn-primary"
                     onClick={handleDownloadSummaryDocx}
                     disabled={downloading === 'summary'}
                 >
-                    {downloading === 'summary' ? '⏳ กำลังสร้าง...' : '📥 ดาวน์โหลด Summary (DOCX)'}
+                    <span className="icon-label">
+                        <Icon name={downloading === 'summary' ? 'refresh' : 'download'} className={downloading === 'summary' ? 'ui-icon-spin' : ''} />
+                        {downloading === 'summary' ? 'กำลังสร้าง...' : 'ดาวน์โหลด Summary (DOCX)'}
+                    </span>
                 </button>
             </div>
 
