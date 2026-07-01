@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Request, Query
-from typing import Optional
+from typing import Literal, Optional
 
 from app.models.user import UserData
 from app.services.mongo import MongoService
@@ -29,12 +29,25 @@ async def get_my_activity_logs(
 async def get_all_activity_logs(
     user_id: Optional[str] = Query(None),
     action: Optional[str] = Query(None),
+    order: Literal["asc", "desc"] = Query("desc"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     admin: UserData = Depends(get_current_admin),
     mongo_service: MongoService = Depends(get_mongo_service),
 ):
     """Get activity logs with optional user/action filter. Admin only."""
-    logs = mongo_service.get_activity_logs(user_id=user_id, action=action, limit=limit, offset=offset)
+    logs = mongo_service.get_activity_logs(
+        user_id=user_id,
+        action=action,
+        limit=limit,
+        offset=offset,
+        sort_order=order,
+    )
     total = mongo_service.count_activity_logs(user_id=user_id, action=action)
-    return {"success": True, "logs": logs, "total": total}
+    return {
+        "success": True,
+        "logs": logs,
+        "total": total,
+        "users": mongo_service.get_activity_filter_users(),
+        "order": order,
+    }

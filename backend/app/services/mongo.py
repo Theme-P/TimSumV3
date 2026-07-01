@@ -1246,8 +1246,9 @@ class MongoService:
         return identities
 
     def get_activity_logs(self, user_id: str = None, action: str = None,
-                          limit: int = 100, offset: int = 0) -> list:
-        """Get activity logs with optional filters. Returns newest-first."""
+                          limit: int = 100, offset: int = 0,
+                          sort_order: str = "desc") -> list:
+        """Get activity logs with optional filters and timestamp ordering."""
         query = {}
         if user_id:
             query["user_id"] = user_id
@@ -1256,7 +1257,7 @@ class MongoService:
 
         cursor = (
             self.db.activity_log.find(query)
-            .sort("timestamp", -1)
+            .sort("timestamp", 1 if sort_order == "asc" else -1)
             .skip(offset)
             .limit(limit)
         )
@@ -1273,6 +1274,23 @@ class MongoService:
             if doc.get("timestamp"):
                 doc["timestamp"] = doc["timestamp"].isoformat()
         return logs
+
+    def get_activity_filter_users(self) -> list:
+        """Return users represented in activity logs for the admin filter."""
+        user_ids = list(dict.fromkeys(
+            str(user_id)
+            for user_id in self.db.activity_log.distinct("user_id")
+            if user_id
+        ))
+        identities = self._get_user_identity_map(user_ids)
+        users = [
+            identities.get(user_id, self._missing_user_identity(user_id))
+            for user_id in user_ids
+        ]
+        return sorted(
+            users,
+            key=lambda user: (user["display_name"].casefold(), user["email"].casefold()),
+        )
 
     def count_activity_logs(self, user_id: str = None, action: str = None) -> int:
         """Count activity logs matching filters."""

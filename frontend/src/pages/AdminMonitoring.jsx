@@ -66,6 +66,10 @@ function AdminMonitoring() {
 
     // Activity Log state
     const [activityLogs, setActivityLogs] = useState([]);
+    const [activityUsers, setActivityUsers] = useState([]);
+    const [activityTotal, setActivityTotal] = useState(0);
+    const [activityUserFilter, setActivityUserFilter] = useState('all');
+    const [activitySortOrder, setActivitySortOrder] = useState('desc');
     const [activityLoading, setActivityLoading] = useState(false);
 
     // Queue state
@@ -116,18 +120,25 @@ function AdminMonitoring() {
     const fetchActivityLogs = useCallback(async () => {
         setActivityLoading(true);
         try {
-            const res = await fetch(`${API_BASE}/admin/activity-logs?limit=100`, { headers });
+            const params = new URLSearchParams({
+                limit: '100',
+                order: activitySortOrder,
+            });
+            if (activityUserFilter !== 'all') params.set('user_id', activityUserFilter);
+            const res = await fetch(`${API_BASE}/admin/activity-logs?${params.toString()}`, { headers });
             const data = await res.json();
             if (!res.ok) {
                 throw new Error(data.detail || 'โหลด Activity Log ไม่สำเร็จ');
             }
             setActivityLogs(data.logs || []);
+            setActivityUsers(data.users || []);
+            setActivityTotal(data.total ?? 0);
         } catch (err) {
             setNotice({ type: 'error', text: err.message });
         } finally {
             setActivityLoading(false);
         }
-    }, [headers]);
+    }, [headers, activitySortOrder, activityUserFilter]);
 
     const fetchQueueData = useCallback(async () => {
         setQueueLoading(true);
@@ -407,10 +418,53 @@ function AdminMonitoring() {
                     </div>
                 ) : activeTab === 'activity' ? (
                     <div>
+                        <div className="monitor-filter-bar">
+                            <label>
+                                <span>ผู้ใช้งาน</span>
+                                <select
+                                    value={activityUserFilter}
+                                    onChange={event => setActivityUserFilter(event.target.value)}
+                                >
+                                    <option value="all">ผู้ใช้ทั้งหมด</option>
+                                    {activityUsers.map(user => (
+                                        <option key={user.id} value={user.id}>
+                                            {user.display_name}{user.email ? ` — ${user.email}` : ''}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                            <label>
+                                <span>เรียงตามเวลา</span>
+                                <select
+                                    value={activitySortOrder}
+                                    onChange={event => setActivitySortOrder(event.target.value)}
+                                >
+                                    <option value="desc">ใหม่สุดก่อน (Descending)</option>
+                                    <option value="asc">เก่าสุดก่อน (Ascending)</option>
+                                </select>
+                            </label>
+                            <button
+                                type="button"
+                                className="monitor-filter-reset"
+                                onClick={() => {
+                                    setActivityUserFilter('all');
+                                    setActivitySortOrder('desc');
+                                }}
+                                disabled={activityUserFilter === 'all' && activitySortOrder === 'desc'}
+                            >
+                                ล้างตัวกรอง
+                            </button>
+                            <span className="monitor-filter-count">
+                                แสดง {activityLogs.length} จาก {activityTotal} รายการ
+                            </span>
+                        </div>
+
                         {activityLoading ? (
                             <div className="history-loading"><div className="history-spinner" /><span>กำลังโหลด...</span></div>
                         ) : activityLogs.length === 0 ? (
-                            <div className="history-empty"><h3>ยังไม่มี Activity Log</h3></div>
+                            <div className="history-empty">
+                                <h3>{activityUserFilter === 'all' ? 'ยังไม่มี Activity Log' : 'ไม่พบ Activity Log ของผู้ใช้นี้'}</h3>
+                            </div>
                         ) : (
                             <div className="monitor-table-scroll">
                                 <div className="monitor-table activity-table">
@@ -420,17 +474,17 @@ function AdminMonitoring() {
                                     {activityLogs.map(log => (
                                         <div key={log._id} className="monitor-table-row activity-grid">
                                             <UserIdentity user={log.user} userId={log.user_id} />
-                                        <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
-                                            {ACTION_LABELS[log.action] || log.action}
-                                            {log.metadata?.filename && (
-                                                <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: '0.4rem', fontSize: '0.78rem' }}>
-                                                    · {log.metadata.filename}
-                                                </span>
-                                            )}
-                                        </span>
-                                        <span className="monitor-time monitor-time-right">
-                                            {new Date(log.timestamp).toLocaleString('th-TH')}
-                                        </span>
+                                            <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
+                                                {ACTION_LABELS[log.action] || log.action}
+                                                {log.metadata?.filename && (
+                                                    <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: '0.4rem', fontSize: '0.78rem' }}>
+                                                        · {log.metadata.filename}
+                                                    </span>
+                                                )}
+                                            </span>
+                                            <span className="monitor-time monitor-time-right">
+                                                {new Date(log.timestamp).toLocaleString('th-TH')}
+                                            </span>
                                         </div>
                                     ))}
                                 </div>

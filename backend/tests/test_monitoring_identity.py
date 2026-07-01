@@ -1,7 +1,7 @@
 import os
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from bson import ObjectId
@@ -16,7 +16,11 @@ class FakeCursor:
     def __init__(self, documents):
         self.documents = [dict(document) for document in documents]
 
-    def sort(self, *_args):
+    def sort(self, field, direction):
+        self.documents.sort(
+            key=lambda document: document.get(field),
+            reverse=direction < 0,
+        )
         return self
 
     def skip(self, offset):
@@ -69,6 +73,9 @@ class FakeActivityCollection:
     def find(self, _query):
         return FakeCursor(self.logs)
 
+    def distinct(self, field):
+        return list({doc[field] for doc in self.logs})
+
 
 class TestMonitoringUserIdentity(unittest.TestCase):
     def setUp(self):
@@ -96,12 +103,20 @@ class TestMonitoringUserIdentity(unittest.TestCase):
             "created_at": now,
             "started_at": now,
         }]
-        self.logs = [{
-            "_id": ObjectId(),
-            "user_id": str(self.user_id),
-            "action": "upload_audio",
-            "timestamp": now,
-        }]
+        self.logs = [
+            {
+                "_id": ObjectId(),
+                "user_id": str(self.user_id),
+                "action": "view_history",
+                "timestamp": now - timedelta(minutes=5),
+            },
+            {
+                "_id": ObjectId(),
+                "user_id": str(self.user_id),
+                "action": "upload_audio",
+                "timestamp": now,
+            },
+        ]
         self.service = MongoService.__new__(MongoService)
         self.service.pii = self.encryptor
         self.service.db = SimpleNamespace(
@@ -127,6 +142,18 @@ class TestMonitoringUserIdentity(unittest.TestCase):
 
         self.assertEqual(logs[0]["user"]["display_name"], "สมชาย ใจดี")
         self.assertEqual(logs[0]["user_id"], str(self.user_id))
+        self.assertEqual(logs[0]["action"], "upload_audio")
+
+    def test_activity_logs_support_ascending_order(self):
+        logs = self.service.get_activity_logs(sort_order="asc")
+
+        self.assertEqual(logs[0]["action"], "view_history")
+
+    def test_activity_user_filter_options_include_identity(self):
+        users = self.service.get_activity_filter_users()
+
+        self.assertEqual(len(users), 1)
+        self.assertEqual(users[0]["display_name"], "สมชาย ใจดี")
 
     def test_job_user_filter_options_include_identity(self):
         users = self.service.get_job_filter_users()
