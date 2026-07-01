@@ -18,11 +18,6 @@ CONSENT_TYPES = {
         "version": DATA_PROCESSING_VERSION,
         "required": True,
     },
-    "marketing": {
-        "label": "รับข้อมูลข่าวสารและโปรโมชั่น",
-        "version": "1.0",
-        "required": False,
-    },
 }
 
 REQUIRED_CONSENT_TYPES = [k for k, v in CONSENT_TYPES.items() if v["required"]]
@@ -30,7 +25,7 @@ REQUIRED_CONSENT_TYPES = [k for k, v in CONSENT_TYPES.items() if v["required"]]
 
 class ConsentRecord(BaseModel):
     user_id: str
-    consent_type: str       # "privacy_policy" | "data_processing" | "marketing"
+    consent_type: str       # "privacy_policy" | "data_processing"
     version: str
     consented: bool
     consented_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -22,7 +22,7 @@ def get_client_ip(request: Request) -> str:
 
 
 class ConsentSubmitRequest(BaseModel):
-    consents: dict  # {"privacy_policy": true, "data_processing": true, "marketing": false}
+    consents: dict  # {"privacy_policy": true, "data_processing": true}
 
 
 @router.get("/consent")

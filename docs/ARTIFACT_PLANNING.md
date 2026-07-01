@@ -730,7 +730,6 @@
 - Consent types:
   - `privacy_policy` — นโยบายความเป็นส่วนตัว
   - `data_processing` — การประมวลผลข้อมูลเสียง/transcript
-  - `marketing` — การรับข้อมูลข่าวสาร (optional)
 - APIs:
   - `GET /api/consent` — ดู consent status ของ user ปัจจุบัน
   - `POST /api/consent` — บันทึก consent (ระบุ type + version)
@@ -741,7 +740,7 @@
 **Frontend:**
 - Modal "ยินยอมการใช้งาน" แสดงในครั้งแรกที่ login (ถ้ายังไม่ consent)
 - หน้า Privacy Policy (`/privacy-policy`) และ Terms of Service (`/terms`)
-- User Profile: section "การยินยอม" — ดู/ถอน consent แต่ละประเภท
+- User Profile: section "การยินยอม" — ดูสถานะ consent แต่ละประเภท
 - Admin: รายงาน consent statistics
 
 **Files ที่ต้องแก้/สร้าง:**

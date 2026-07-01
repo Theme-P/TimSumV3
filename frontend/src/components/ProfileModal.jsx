@@ -807,42 +807,44 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
                             </h3>
                             {consentData ? (
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                                    {Object.entries(consentData).map(([type, info]) => (
-                                        <div key={type} style={{
-                                            padding: '0.9rem 1rem', borderRadius: '10px',
-                                            background: 'var(--bg-secondary)',
-                                            border: `1px solid ${info.consented ? 'rgba(45,138,78,0.25)' : 'var(--border-color)'}`,
-                                            borderLeft: `3px solid ${info.consented ? 'var(--success)' : 'var(--text-muted)'}`,
-                                        }}>
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                                <div>
-                                                    <span style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
-                                                        {info.label}
+                                    {Object.entries(consentData)
+                                        .filter(([type]) => type !== 'marketing')
+                                        .map(([type, info]) => (
+                                            <div key={type} style={{
+                                                padding: '0.9rem 1rem', borderRadius: '10px',
+                                                background: 'var(--bg-secondary)',
+                                                border: `1px solid ${info.consented ? 'rgba(45,138,78,0.25)' : 'var(--border-color)'}`,
+                                                borderLeft: `3px solid ${info.consented ? 'var(--success)' : 'var(--text-muted)'}`,
+                                            }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                    <div>
+                                                        <span style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                                                            {info.label}
+                                                        </span>
+                                                        {info.required && (
+                                                            <span style={{ marginLeft: '0.5rem', fontSize: '0.72rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'rgba(184,134,11,0.15)', color: 'var(--accent-primary)' }}>
+                                                                จำเป็น
+                                                            </span>
+                                                        )}
+                                                        {info.version_outdated && (
+                                                            <span style={{ marginLeft: '0.4rem', fontSize: '0.72rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'rgba(192,57,43,0.15)', color: 'var(--error)' }}>
+                                                                เวอร์ชั่นใหม่
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <span className="icon-label" style={{ fontSize: '0.85rem', fontWeight: 600, color: info.consented ? 'var(--success)' : 'var(--text-muted)' }}>
+                                                        <Icon name={info.consented ? 'check-circle' : 'x-circle'} /> {info.consented ? 'ยินยอมแล้ว' : 'ยังไม่ยินยอม'}
                                                     </span>
-                                                    {info.required && (
-                                                        <span style={{ marginLeft: '0.5rem', fontSize: '0.72rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'rgba(184,134,11,0.15)', color: 'var(--accent-primary)' }}>
-                                                            จำเป็น
-                                                        </span>
-                                                    )}
-                                                    {info.version_outdated && (
-                                                        <span style={{ marginLeft: '0.4rem', fontSize: '0.72rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'rgba(192,57,43,0.15)', color: 'var(--error)' }}>
-                                                            เวอร์ชั่นใหม่
-                                                        </span>
-                                                    )}
                                                 </div>
-                                                <span className="icon-label" style={{ fontSize: '0.85rem', fontWeight: 600, color: info.consented ? 'var(--success)' : 'var(--text-muted)' }}>
-                                                    <Icon name={info.consented ? 'check-circle' : 'x-circle'} /> {info.consented ? 'ยินยอมแล้ว' : 'ยังไม่ยินยอม'}
-                                                </span>
+                                                {info.consented_at && (
+                                                    <p style={{ margin: '0.3rem 0 0', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                                        ยินยอมเมื่อ: {parseUtcDate(info.consented_at).toLocaleString()} · เวอร์ชัน {info.current_version}
+                                                    </p>
+                                                )}
                                             </div>
-                                            {info.consented_at && (
-                                                <p style={{ margin: '0.3rem 0 0', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                                                    ยินยอมเมื่อ: {parseUtcDate(info.consented_at).toLocaleString()} · เวอร์ชัน {info.current_version}
-                                                </p>
-                                            )}
-                                        </div>
-                                    ))}
+                                        ))}
                                     <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
-                                        หากต้องการถอนการยินยอมที่ไม่บังคับ หรือขอลบข้อมูล กรุณาติดต่อผู้ดูแลระบบ
+                                        หากต้องการขอลบข้อมูล กรุณาติดต่อผู้ดูแลระบบ
                                     </p>
                                 </div>
                             ) : (

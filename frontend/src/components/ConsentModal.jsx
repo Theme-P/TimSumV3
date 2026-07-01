@@ -3,7 +3,6 @@ import React, { useState } from 'react';
 const API_BASE = '/api';
 
 export default function ConsentModal({ token, onConsented }) {
-    const [marketing, setMarketing] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
@@ -18,7 +17,6 @@ export default function ConsentModal({ token, onConsented }) {
                     consents: {
                         privacy_policy: true,
                         data_processing: true,
-                        marketing,
                     },
                 }),
             });
@@ -71,24 +69,6 @@ export default function ConsentModal({ token, onConsented }) {
                             โดยข้อมูลเสียงจะถูกเก็บไว้ชั่วคราวระหว่างการประมวลผลเท่านั้น
                             ดูรายละเอียดเพิ่มเติมใน{' '}
                             <a href="/terms" target="_blank" rel="noopener noreferrer">เงื่อนไขการใช้งาน</a>
-                        </p>
-                    </div>
-
-                    <div className="consent-item optional">
-                        <div className="consent-check">
-                            <input
-                                type="checkbox"
-                                id="marketing"
-                                checked={marketing}
-                                onChange={e => setMarketing(e.target.checked)}
-                            />
-                            <label htmlFor="marketing">
-                                <strong>รับข้อมูลข่าวสารและโปรโมชั่น</strong>
-                                <span className="optional-badge">ไม่บังคับ</span>
-                            </label>
-                        </div>
-                        <p className="consent-desc">
-                            ข้าพเจ้ายินยอมรับอีเมลข้อมูลข่าวสาร อัปเดตฟีเจอร์ใหม่ และโปรโมชั่นจาก TimSum
                         </p>
                     </div>
 
