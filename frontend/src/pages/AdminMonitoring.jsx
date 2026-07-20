@@ -22,12 +22,20 @@ const QUEUE_STATUS_LABELS = Object.fromEntries(
 
 const PROCESS_STEP_LABELS = {
     queued: 'รอ Worker รับงาน',
-    loading_model: 'โหลดโมเดล',
-    loading_audio: 'โหลดไฟล์เสียง',
+    model_load: 'โหลดโมเดล',
+    audio_load: 'โหลดไฟล์เสียง',
     transcribing: 'ถอดเสียง',
     diarizing: 'แยกผู้พูด',
+    detecting_agendas: 'ตรวจวาระ/หัวข้อ',
     summarizing: 'สรุปการประชุม',
-    completed: 'เสร็จสมบูรณ์',
+    summary_queued: 'รอ Worker สรุป',
+    summarizing_chunk: 'สรุปทีละช่วง',
+    summary_finalizing: 'รวมผลสรุป',
+    saving: 'บันทึกผลลัพธ์',
+    done: 'เสร็จสมบูรณ์',
+    retry: 'รอ retry',
+    error: 'เกิดข้อผิดพลาด',
+    cancelled: 'ยกเลิกแล้ว',
 };
 
 function UserIdentity({ user, userId }) {

@@ -17,7 +17,7 @@ celery_app = Celery(
     "timsumv3",
     broker=REDIS_URL,
     backend=REDIS_URL,
-    include=["app.tasks.transcription"],
+    include=["app.tasks.transcription", "app.tasks.summary"],
 )
 
 celery_app.conf.update(
@@ -35,6 +35,12 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     task_track_started=True,
+    task_default_queue="transcription",
+    task_routes={
+        "transcription.process_audio": {"queue": "transcription"},
+        "summary.process_next_chunk": {"queue": "summary"},
+        "summary.finalize": {"queue": "summary"},
+    },
 
     # Result expiry
     result_expires=3600,

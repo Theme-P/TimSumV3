@@ -143,9 +143,16 @@ function MainApp() {
         audio_load: 1,
         transcribing: 2,
         diarizing: 3,
-        summarizing: 4,
-        saving: 4,
-        done: 5,
+        detecting_agendas: 4,
+        summarizing: 5,
+        summary_queued: 5,
+        summarizing_chunk: 5,
+        summary_finalizing: 6,
+        saving: 6,
+        done: 7,
+        retry: 0,
+        error: 0,
+        cancelled: 0,
     }
 
     const pollJobStatus = useCallback(async (jobId) => {

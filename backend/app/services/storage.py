@@ -6,8 +6,10 @@ Buckets:
   - speaker-clips   : extracted speaker audio clips (~10s each)
 """
 import os
+import json
 import tempfile
 from io import BytesIO
+from typing import Any
 from typing import Optional
 
 from loguru import logger
@@ -17,8 +19,9 @@ from minio.error import S3Error
 BUCKET_AUDIO = "audio-uploads"
 BUCKET_CLIPS = "speaker-clips"
 BUCKET_VOICE_SAMPLES = "voice-samples"
+BUCKET_ARTIFACTS = "artifacts"
 
-_ALL_BUCKETS = [BUCKET_AUDIO, BUCKET_CLIPS, BUCKET_VOICE_SAMPLES]
+_ALL_BUCKETS = [BUCKET_AUDIO, BUCKET_CLIPS, BUCKET_VOICE_SAMPLES, BUCKET_ARTIFACTS]
 
 
 class StorageService:
@@ -61,6 +64,17 @@ class StorageService:
         self.client.put_object(bucket, object_name, data, length, content_type=content_type)
         return object_name
 
+    def upload_json(self, bucket: str, object_name: str, payload: dict[str, Any]) -> str:
+        """Upload a small JSON artifact. Returns the object name."""
+        raw = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+        return self.upload_stream(
+            bucket,
+            object_name,
+            BytesIO(raw),
+            len(raw),
+            content_type="application/json; charset=utf-8",
+        )
+
     # ── Download ──
 
     def download_file(self, bucket: str, object_name: str, dest_path: str) -> str:
@@ -83,6 +97,10 @@ class StorageService:
         finally:
             response.close()
             response.release_conn()
+
+    def get_json(self, bucket: str, object_name: str) -> dict[str, Any]:
+        """Read a small JSON artifact."""
+        return json.loads(self.get_object_bytes(bucket, object_name).decode("utf-8"))
 
     # ── Query ──
 

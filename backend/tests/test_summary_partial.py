@@ -4,6 +4,19 @@ from app.services import summary_pipeline as pipeline
 
 
 class SummaryPartialTests(unittest.TestCase):
+    def test_chunk_segments_cover_each_segment_once_without_overlap(self):
+        segments = [
+            {"text": f"ประเด็นที่ {index} " * 20, "speaker": "คนพูด 1", "start": index, "end": index + 1}
+            for index in range(8)
+        ]
+
+        chunks = pipeline.chunk_segments(segments, max_tokens=80, overlap_tokens=0)
+        seen = [segment_id for chunk in chunks for segment_id in chunk["segment_ids"]]
+
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual(seen, list(range(8)))
+        self.assertEqual(len(seen), len(set(seen)))
+
     def test_extracts_summary_from_incomplete_json(self):
         content = '{"summary": "สรุปบางส่วนจาก Gemma ก่อน timeout'
 
@@ -32,6 +45,32 @@ class SummaryPartialTests(unittest.TestCase):
         self.assertEqual(record["failed_chunks"], [1])
         self.assertEqual(record["partial_chunks"], [1])
         self.assertEqual(record["coverage"], [])
+
+    def test_incremental_summary_marks_partial_metadata(self):
+        segments = [
+            {"text": "วันนี้หารือเรื่องงบประมาณประจำปี", "speaker": "นายก", "start": 0, "end": 10},
+            {"text": "ขอเพิ่มงบการตลาดและให้ฝ่ายบัญชีตรวจตัวเลข", "speaker": "เลขา", "start": 10, "end": 20},
+        ]
+
+        def llm_call(system_prompt, user_prompt, **kwargs):
+            if "Transcript ปัจจุบัน" in user_prompt:
+                return '{"summary": "มีการหารืองบประมาณและงานให้ฝ่ายบัญชีตรวจ'
+            return "สรุปสุดท้ายจาก partial"
+
+        summary, metadata = pipeline.summarize_transcript_incrementally(
+            transcript="\n".join(segment["text"] for segment in segments),
+            segments=segments,
+            meeting_type_id=0,
+            template_prompt="",
+            custom_prompt="",
+            llm_call=llm_call,
+        )
+
+        self.assertIn("สรุปสุดท้ายจาก partial", summary)
+        self.assertFalse(metadata["coverage_complete"])
+        self.assertEqual(metadata["partial_chunks"], [1])
+        self.assertEqual(metadata["failed_chunks"], [1])
+        self.assertIn("user_warning", metadata)
 
 
 if __name__ == "__main__":

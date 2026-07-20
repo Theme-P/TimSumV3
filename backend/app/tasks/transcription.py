@@ -19,7 +19,7 @@ from loguru import logger
 
 from app.celery_app import celery_app
 from app.services.pipeline import TranscribeSummaryPipeline
-from app.services.storage import StorageService, BUCKET_AUDIO, BUCKET_CLIPS
+from app.services.storage import StorageService, BUCKET_ARTIFACTS, BUCKET_AUDIO, BUCKET_CLIPS
 from app.services.db import get_worker_db
 from app.services.email_service import EmailService
 from app.services.cancellation import JobCancelled
@@ -31,6 +31,14 @@ TASK_MAX_RETRIES = int(os.getenv("TRANSCRIBE_MAX_RETRIES", "2"))
 TASK_RETRY_DELAY_SECONDS = int(os.getenv("TRANSCRIBE_RETRY_DELAY_SECONDS", "60"))
 TASK_SOFT_TIME_LIMIT_SECONDS = int(os.getenv("TRANSCRIBE_SOFT_TIME_LIMIT_SECONDS", "1800"))
 TASK_TIME_LIMIT_SECONDS = int(os.getenv("TRANSCRIBE_TIME_LIMIT_SECONDS", "2100"))
+
+
+def _summary_pipeline_mode() -> str:
+    return os.getenv("SUMMARY_PIPELINE_MODE", "inline").strip().lower()
+
+
+def _async_summary_enabled() -> bool:
+    return _summary_pipeline_mode() == "async"
 
 
 def _get_storage() -> StorageService:
@@ -274,7 +282,10 @@ def process_audio(
             _update_job(db, job_id, {"current_step": step, "progress": progress})
             _ensure_not_cancelled(db, job_id)
 
-        # Run the pipeline with live progress reporting
+        # Run the pipeline with live progress reporting. In async summary mode
+        # this stops after transcript/agenda preparation and releases the GPU
+        # worker before the LLM summarization phase.
+        async_summary = _async_summary_enabled()
         pipeline = TranscribeSummaryPipeline()
         result = pipeline.process(
             local_audio,
@@ -284,6 +295,7 @@ def process_audio(
             voice_samples=voice_samples,
             mongo_service=db,
             cancellation_checker=lambda: _ensure_not_cancelled(db, job_id),
+            run_summary=not async_summary,
         )
         _ensure_not_cancelled(db, job_id)
 
@@ -316,6 +328,60 @@ def process_audio(
             storage.delete_object(BUCKET_AUDIO, audio_object)
         except Exception:
             pass
+
+        if async_summary:
+            from app.tasks.summary import initialize_summary_state, process_next_chunk
+
+            artifact_object = f"artifacts/{job_id}/transcript.json"
+            artifact_payload = {
+                "job_id": job_id,
+                "user_id": user_id,
+                "original_filename": original_filename,
+                "meeting_type_id": meeting_type_id,
+                "email_recipient": email_recipient,
+                "custom_prompt": custom_prompt,
+                "audio_length_seconds": result["audio_length_seconds"],
+                "processing_time": result["processing_time"],
+                "full_transcript": result["full_transcript"],
+                "speaker_clips_response": speaker_clips_response,
+                "clip_prefix": clip_prefix,
+                "suggested_names": result.get("suggested_names", {}),
+                "agendas": result.get("agendas", []),
+                "detection_mode": result.get("detection_mode", "single_topic"),
+                "detected_language": result.get("detected_language", "th"),
+                "effective_meeting_type_id": result.get("effective_meeting_type_id", meeting_type_id),
+                "meeting_style_source": result.get("meeting_style_source"),
+                "meeting_style_classification": result.get("meeting_style_classification", {}),
+                "summary_metadata": result.get("summary_metadata", {}),
+            }
+            storage.upload_json(BUCKET_ARTIFACTS, artifact_object, artifact_payload)
+            state = initialize_summary_state(
+                db,
+                job_id,
+                artifact_object,
+                result["full_transcript"]["segments"],
+            )
+            _update_job(db, job_id, {
+                "status": "processing",
+                "current_step": "summary_queued",
+                "progress": 75,
+                "transcript_artifact_object": artifact_object,
+                "summary_status": "queued",
+                "summary_progress": 0,
+                "summary_completed_chunks": 0,
+                "summary_total_chunks": state.get("total_chunks", 0),
+                "covered_segments": 0,
+                "total_segments": state.get("total_segments", 0),
+                "partial_chunks": [],
+                "coverage_complete": False,
+            })
+            process_next_chunk.apply_async(args=[job_id], queue="summary")
+            logger.info(
+                "Job %s transcription completed; async summary queued with %s chunks",
+                job_id,
+                state.get("total_chunks", 0),
+            )
+            return {"job_id": job_id, "summary_queued": True}
 
         # Save session to history
         _ensure_not_cancelled(db, job_id)

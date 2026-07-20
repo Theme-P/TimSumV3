@@ -163,6 +163,7 @@ class TranscribeSummaryPipeline:
         voice_samples: list = None,
         mongo_service=None,
         cancellation_checker: Optional[Callable[[], None]] = None,
+        run_summary: bool = True,
     ) -> Dict[str, Any]:
         """
         Process audio file: transcribe and summarize.
@@ -172,6 +173,8 @@ class TranscribeSummaryPipeline:
             meeting_type_id: Meeting type ID (0=auto-detect, 1-11=specific type)
             on_progress: Optional callback(step: str, progress: int) for status updates
             custom_prompt: Optional user instruction to append to summary prompt
+            run_summary: When False, stop after transcription/diarization/agenda
+                preparation and return enough artifacts for a separate summary task.
 
         Returns structured output with:
         - Full transcript with segments
@@ -519,53 +522,69 @@ class TranscribeSummaryPipeline:
         _check_cancelled()
 
         # Step 10: Run the incremental summary pipeline, optionally grouped by agenda.
-        _report("summarizing", 75)
-        meeting_info = MEETING_TYPES.get(effective_meeting_type_id, MEETING_TYPES[0])
-        logger.info(f"Running AI Summary ({meeting_info['thai']})...")
-        summary_start = time.time()
-
         enriched_agendas = []
         summary_metadata = {}
-        if detected_agendas:
-            # Multi-agenda path: summarize each agenda + executive summary
-            logger.info(f"Using agenda-aware summarization ({len(detected_agendas)} agendas)")
-            summary_text, enriched_agendas, summary_metadata = summarize_with_agendas(
-                segments=segments,
-                agendas=detected_agendas,
-                meeting_type_id=effective_meeting_type_id,
-                custom_prompt=custom_prompt,
-                mongo_service=mongo_service,
-                return_metadata=True,
-                resolved_meeting_style=resolved_meeting_style,
-                cancel_check=_check_cancelled,
-            )
+        summary_text = ""
+        summary_time = 0
+        if run_summary:
+            _report("summarizing", 75)
+            meeting_info = MEETING_TYPES.get(effective_meeting_type_id, MEETING_TYPES[0])
+            logger.info(f"Running AI Summary ({meeting_info['thai']})...")
+            summary_start = time.time()
+
+            if detected_agendas:
+                # Multi-agenda path: summarize each agenda + executive summary
+                logger.info(f"Using agenda-aware summarization ({len(detected_agendas)} agendas)")
+                summary_text, enriched_agendas, summary_metadata = summarize_with_agendas(
+                    segments=segments,
+                    agendas=detected_agendas,
+                    meeting_type_id=effective_meeting_type_id,
+                    custom_prompt=custom_prompt,
+                    mongo_service=mongo_service,
+                    return_metadata=True,
+                    resolved_meeting_style=resolved_meeting_style,
+                    cancel_check=_check_cancelled,
+                )
+            else:
+                # Standard single-topic path
+                summary_text, summary_metadata = summarize_with_diarization(
+                    transcript_with_speakers,
+                    speaker_summary,
+                    meeting_type_id=effective_meeting_type_id,
+                    custom_prompt=custom_prompt,
+                    mongo_service=mongo_service,
+                    segments=segments,
+                    return_metadata=True,
+                    resolved_meeting_style=resolved_meeting_style,
+                    cancel_check=_check_cancelled,
+                )
+            _check_cancelled()
+
+            summary_metadata = {
+                **summary_metadata,
+                "meeting_style_id": effective_meeting_type_id,
+                "meeting_style_source": meeting_style_source,
+                "meeting_style_key": meeting_style_classification.get("meeting_type", "general_meeting"),
+                "agenda_detection_mode": detection_mode,
+                "agenda_count": len(detected_agendas),
+                "agenda_split_reasons": agenda_result.get("split_reasons", []),
+            }
+
+            summary_time = time.time() - summary_start
+            logger.info(f"Summary API completed in {summary_time:.2f}s")
         else:
-            # Standard single-topic path
-            summary_text, summary_metadata = summarize_with_diarization(
-                transcript_with_speakers,
-                speaker_summary,
-                meeting_type_id=effective_meeting_type_id,
-                custom_prompt=custom_prompt,
-                mongo_service=mongo_service,
-                segments=segments,
-                return_metadata=True,
-                resolved_meeting_style=resolved_meeting_style,
-                cancel_check=_check_cancelled,
-            )
-        _check_cancelled()
-
-        summary_metadata = {
-            **summary_metadata,
-            "meeting_style_id": effective_meeting_type_id,
-            "meeting_style_source": meeting_style_source,
-            "meeting_style_key": meeting_style_classification.get("meeting_type", "general_meeting"),
-            "agenda_detection_mode": detection_mode,
-            "agenda_count": len(detected_agendas),
-            "agenda_split_reasons": agenda_result.get("split_reasons", []),
-        }
-
-        summary_time = time.time() - summary_start
-        logger.info(f"Summary API completed in {summary_time:.2f}s")
+            _report("summary_queued", 75)
+            enriched_agendas = detected_agendas
+            summary_metadata = {
+                "version": "async_pending",
+                "meeting_style_id": effective_meeting_type_id,
+                "meeting_style_source": meeting_style_source,
+                "meeting_style_key": meeting_style_classification.get("meeting_type", "general_meeting"),
+                "agenda_detection_mode": detection_mode,
+                "agenda_count": len(detected_agendas),
+                "agenda_split_reasons": agenda_result.get("split_reasons", []),
+                "degraded": False,
+            }
         
         total_time = time.time() - total_start
         
@@ -604,6 +623,9 @@ class TranscribeSummaryPipeline:
             'clip_dir': clip_dir,
             'suggested_names': suggested_names,
             'detected_language': detected_language,
+            'effective_meeting_type_id': effective_meeting_type_id,
+            'meeting_style_source': meeting_style_source,
+            'meeting_style_classification': meeting_style_classification,
         }
         
         return output
