@@ -159,7 +159,7 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    command: celery -A app.celery_app:celery_app worker --loglevel=info --queues=summary --concurrency=${SUMMARY_WORKER_CONCURRENCY:-2}
+    command: celery -A app.celery_app:celery_app worker --loglevel=info --queues=summary --concurrency=${SUMMARY_WORKER_CONCURRENCY:-2} --pool=threads
     networks:
       - app-network
     mem_limit: 4g
