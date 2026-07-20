@@ -8,6 +8,13 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
 class PipelineConfig:
     """Configuration for the transcription-summary pipeline"""
     
@@ -17,7 +24,12 @@ class PipelineConfig:
     
     # WhisperX settings
     MODEL_NAME = os.environ.get("WHISPERX_MODEL", "large-v3")
-    BATCH_SIZE = int(os.environ.get("WHISPERX_BATCH_SIZE", "24"))
+    BATCH_SIZE = _env_int("WHISPERX_BATCH_SIZE", 8)
+    MIN_BATCH_SIZE = _env_int("WHISPERX_MIN_BATCH_SIZE", 2)
+    OOM_FALLBACK_COMPUTE_TYPE = (
+        os.environ.get("WHISPERX_OOM_FALLBACK_COMPUTE_TYPE", "int8_float16").strip()
+        or None
+    )
     LANGUAGE = os.environ.get("WHISPERX_LANGUAGE") or None  # None = auto-detect language
     
     # Beam search settings

@@ -4,14 +4,19 @@ import os
 import time
 import tempfile
 import logging
-from typing import Dict, Any, Optional
+from typing import Callable, Dict, Any, Optional
 import whisperx
 
 from ..core.config import PipelineConfig
 
 logger = logging.getLogger(__name__)
 from ..models.meeting import MEETING_TYPES
-from ..services.summarizer import summarize_with_diarization, detect_speaker_names, summarize_with_agendas
+from ..services.summarizer import (
+    detect_speaker_names,
+    resolve_meeting_style,
+    summarize_with_agendas,
+    summarize_with_diarization,
+)
 from ..services.agenda_detector import detect_agendas
 from ..services.text_cleaner import clean_transcription
 from ..utils.formatting import format_speaker, format_time
@@ -30,6 +35,11 @@ def clear_gpu_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
+
+def is_cuda_oom(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "out of memory" in message and ("cuda" in message or "cublas" in message)
+
 class TranscribeSummaryPipeline:
     """
     Combined pipeline that runs WhisperX transcription and configurable LLM summarization.
@@ -39,12 +49,22 @@ class TranscribeSummaryPipeline:
     def __init__(self, config: PipelineConfig = None):
         self.config = config or PipelineConfig()
         self.model = None
+        self.active_compute_type = self.config.COMPUTE_TYPE
         self.timing = {}
+
+    def close(self):
+        """Release model references and cached CUDA allocations."""
+        model = self.model
+        self.model = None
+        if model is not None:
+            del model
+        clear_gpu_memory()
     
     def _load_model(self):
         """Load WhisperX model with optimized settings"""
         logger.info("Loading WhisperX model...")
         start = time.time()
+        clear_gpu_memory()
         
         load_kwargs = {
             "asr_options": {
@@ -72,17 +92,78 @@ class TranscribeSummaryPipeline:
         if self.config.LANGUAGE:
             load_kwargs["language"] = self.config.LANGUAGE
         
-        self.model = whisperx.load_model(
-            self.config.MODEL_NAME,
-            self.config.DEVICE,
-            compute_type=self.config.COMPUTE_TYPE,
-            **load_kwargs,
-        )
+        compute_types = [self.config.COMPUTE_TYPE]
+        fallback_compute_type = self.config.OOM_FALLBACK_COMPUTE_TYPE
+        if fallback_compute_type and fallback_compute_type not in compute_types:
+            compute_types.append(fallback_compute_type)
+
+        for index, compute_type in enumerate(compute_types):
+            try:
+                self.model = whisperx.load_model(
+                    self.config.MODEL_NAME,
+                    self.config.DEVICE,
+                    compute_type=compute_type,
+                    **load_kwargs,
+                )
+                self.active_compute_type = compute_type
+                break
+            except Exception as exc:
+                self.close()
+                has_fallback = index + 1 < len(compute_types)
+                if not is_cuda_oom(exc) or not has_fallback:
+                    raise
+                logger.warning(
+                    "WhisperX model load ran out of VRAM with compute_type=%s; "
+                    "retrying with %s",
+                    compute_type,
+                    compute_types[index + 1],
+                )
         
         self.timing['model_load'] = time.time() - start
-        logger.info(f"Model loaded in {self.timing['model_load']:.2f}s")
+        logger.info(
+            "Model loaded in %.2fs (compute_type=%s)",
+            self.timing['model_load'],
+            self.active_compute_type,
+        )
+
+    def _transcribe_audio(self, audio):
+        batch_size = max(self.config.MIN_BATCH_SIZE, self.config.BATCH_SIZE)
+        min_batch_size = min(self.config.MIN_BATCH_SIZE, batch_size)
+
+        while True:
+            transcribe_kwargs = {
+                "batch_size": batch_size,
+                "task": "transcribe",
+            }
+            if self.config.LANGUAGE:
+                transcribe_kwargs["language"] = self.config.LANGUAGE
+
+            try:
+                return self.model.transcribe(audio, **transcribe_kwargs), batch_size
+            except Exception as exc:
+                if not is_cuda_oom(exc) or batch_size <= min_batch_size:
+                    raise
+
+                next_batch_size = max(min_batch_size, batch_size // 2)
+                logger.warning(
+                    "WhisperX transcription ran out of VRAM at batch_size=%s; "
+                    "clearing CUDA cache and retrying with batch_size=%s",
+                    batch_size,
+                    next_batch_size,
+                )
+                clear_gpu_memory()
+                batch_size = next_batch_size
     
-    def process(self, audio_file: str, meeting_type_id: int = 0, on_progress=None, custom_prompt: str = "", voice_samples: list = None, mongo_service=None) -> Dict[str, Any]:
+    def process(
+        self,
+        audio_file: str,
+        meeting_type_id: int = 0,
+        on_progress=None,
+        custom_prompt: str = "",
+        voice_samples: list = None,
+        mongo_service=None,
+        cancellation_checker: Optional[Callable[[], None]] = None,
+    ) -> Dict[str, Any]:
         """
         Process audio file: transcribe and summarize.
 
@@ -98,9 +179,15 @@ class TranscribeSummaryPipeline:
         - Speaker audio clips (~10s per speaker)
         - Processing times
         """
+        def _check_cancelled():
+            if cancellation_checker:
+                cancellation_checker()
+
         def _report(step: str, progress: int):
+            _check_cancelled()
             if on_progress:
                 on_progress(step, progress)
+            _check_cancelled()
 
         total_start = time.time()
 
@@ -109,6 +196,7 @@ class TranscribeSummaryPipeline:
         # Step 1: Load model
         _report("model_load", 5)
         self._load_model()
+        _check_cancelled()
         
         # Step 2: Load audio
         _report("audio_load", 10)
@@ -117,26 +205,24 @@ class TranscribeSummaryPipeline:
         audio = whisperx.load_audio(audio_file)
         audio_time = time.time() - audio_start
         logger.info(f"Audio loaded in {audio_time:.2f}s")
+        _check_cancelled()
         
         # Step 3: Transcribe
         _report("transcribing", 20)
         logger.info("Transcribing...")
         trans_start = time.time()
-        # Build transcribe kwargs
-        transcribe_kwargs = {
-            "batch_size": self.config.BATCH_SIZE,
-            "task": "transcribe",
-        }
-        if self.config.LANGUAGE:
-            transcribe_kwargs["language"] = self.config.LANGUAGE
-        
-        result = self.model.transcribe(audio, **transcribe_kwargs)
+        result, effective_batch_size = self._transcribe_audio(audio)
+        _check_cancelled()
         
         # Detect language from result (WhisperX returns detected language)
         detected_language = result.get("language", self.config.LANGUAGE or "th")
         logger.info(f"Detected language: {detected_language}")
         trans_time = time.time() - trans_start
-        logger.info(f"Transcription completed in {trans_time:.2f}s")
+        logger.info(
+            "Transcription completed in %.2fs (batch_size=%s)",
+            trans_time,
+            effective_batch_size,
+        )
         
         # Extract text for summary
         combined_text = ' '.join(
@@ -150,11 +236,10 @@ class TranscribeSummaryPipeline:
         combined_text = clean_transcription(combined_text)
         clean_time = time.time() - clean_start
         logger.info(f"Text cleaning completed in {clean_time:.2f}s")
+        _check_cancelled()
         
         # Clear transcription model to free VRAM
-        del self.model
-        self.model = None
-        clear_gpu_memory()
+        self.close()
         
         # Step 4: Align transcript (word-level timestamps for better speaker assignment)
         alignment_success = False
@@ -218,6 +303,7 @@ class TranscribeSummaryPipeline:
 
         if not alignment_success:
             align_time = 0
+        _check_cancelled()
         
         # Step 5: Run speaker diarization
         _report("diarizing", 50)
@@ -248,6 +334,7 @@ class TranscribeSummaryPipeline:
         # Clear diarization model
         del diarize_model
         clear_gpu_memory()
+        _check_cancelled()
         
         # Build speaker summary and transcript with generic speaker labels
         segments = sorted(result.get('segments', []), key=lambda x: x['start'])
@@ -262,6 +349,10 @@ class TranscribeSummaryPipeline:
             
             duration = segment['end'] - segment['start']
             text = segment.get('text', '').strip()
+            # Clean repetitive/hallucinated text at segment level
+            # so the web UI and DOCX exports also show clean output
+            text = clean_transcription(text)
+            segment['text'] = text
             word_count = len(text.split())
             speakers_time[speaker] = speakers_time.get(speaker, 0) + duration
             speakers_words[speaker] = speakers_words.get(speaker, 0) + word_count
@@ -298,6 +389,7 @@ class TranscribeSummaryPipeline:
             logger.info(f"Clip extraction completed in {clip_time:.2f}s")
         else:
             logger.info("Speaker clip extraction disabled by ENABLE_SPEAKER_CLIPS=false")
+        _check_cancelled()
         
         # Step 7: Voice enrollment matching (if voice samples provided)
         voice_matches = {}
@@ -341,6 +433,7 @@ class TranscribeSummaryPipeline:
             voice_match_time = 0
             if voice_samples:
                 logger.info("Voice matching disabled by ENABLE_VOICE_MATCHING=false")
+        _check_cancelled()
 
         # Step 8: Detect speaker names from self-introductions
         # Only detect for speakers NOT already matched by voice enrollment
@@ -348,7 +441,12 @@ class TranscribeSummaryPipeline:
         unmatched_labels = [s for s in speaker_labels if s not in voice_matches]
         if unmatched_labels and self.config.ENABLE_SPEAKER_NAME_DETECTION:
             logger.info("Detecting speaker names from introductions...")
-            suggested_names = detect_speaker_names(transcript_with_speakers, unmatched_labels)
+            suggested_names = detect_speaker_names(
+                transcript_with_speakers,
+                unmatched_labels,
+                mongo_service=mongo_service,
+                cancel_check=_check_cancelled,
+            )
         else:
             suggested_names = {}
             if unmatched_labels:
@@ -373,8 +471,29 @@ class TranscribeSummaryPipeline:
         else:
             logger.info("No speaker introductions detected")
         logger.info(f"Name detection completed in {detect_time:.2f}s")
-        
-        # Step 9: Agenda detection (automatic — runs on every transcript)
+        _check_cancelled()
+
+        transcript_for_style = transcript_with_speakers or combined_text
+        effective_meeting_type_id, meeting_style_classification, meeting_style_source = resolve_meeting_style(
+            transcript_for_style,
+            meeting_type_id,
+            mongo_service=mongo_service,
+            cancel_check=_check_cancelled,
+        )
+        resolved_meeting_style = (
+            effective_meeting_type_id,
+            meeting_style_classification,
+            meeting_style_source,
+        )
+        logger.info(
+            "Meeting style resolved: id=%s source=%s key=%s",
+            effective_meeting_type_id,
+            meeting_style_source,
+            meeting_style_classification.get("meeting_type", "general_meeting"),
+        )
+        _check_cancelled()
+
+        # Step 9: Agenda detection — agenda boundaries come from transcript markers/context only.
         _report("detecting_agendas", 70)
         agenda_result = {"agendas": [], "detection_mode": "single_topic"}
         agenda_time = 0
@@ -383,7 +502,10 @@ class TranscribeSummaryPipeline:
             agenda_start = time.time()
             agenda_result = detect_agendas(
                 segments=segments,
-                meeting_type_id=meeting_type_id,
+                meeting_type_id=effective_meeting_type_id,
+                mongo_service=mongo_service,
+                allow_semantic_split=(meeting_type_id == 0),
+                cancel_check=_check_cancelled,
             )
             agenda_time = time.time() - agenda_start
         else:
@@ -394,33 +516,53 @@ class TranscribeSummaryPipeline:
             f"Agenda detection completed in {agenda_time:.2f}s — "
             f"mode: {detection_mode}, agendas: {len(detected_agendas)}"
         )
+        _check_cancelled()
 
-        # Step 10: Run summary (agenda-aware or standard)
+        # Step 10: Run the incremental summary pipeline, optionally grouped by agenda.
         _report("summarizing", 75)
-        meeting_info = MEETING_TYPES.get(meeting_type_id, MEETING_TYPES[0])
+        meeting_info = MEETING_TYPES.get(effective_meeting_type_id, MEETING_TYPES[0])
         logger.info(f"Running AI Summary ({meeting_info['thai']})...")
         summary_start = time.time()
 
         enriched_agendas = []
+        summary_metadata = {}
         if detected_agendas:
             # Multi-agenda path: summarize each agenda + executive summary
             logger.info(f"Using agenda-aware summarization ({len(detected_agendas)} agendas)")
-            summary_text, enriched_agendas = summarize_with_agendas(
+            summary_text, enriched_agendas, summary_metadata = summarize_with_agendas(
                 segments=segments,
                 agendas=detected_agendas,
-                meeting_type_id=meeting_type_id,
+                meeting_type_id=effective_meeting_type_id,
                 custom_prompt=custom_prompt,
-                mongo_service=mongo_service
+                mongo_service=mongo_service,
+                return_metadata=True,
+                resolved_meeting_style=resolved_meeting_style,
+                cancel_check=_check_cancelled,
             )
         else:
             # Standard single-topic path
-            summary_text = summarize_with_diarization(
+            summary_text, summary_metadata = summarize_with_diarization(
                 transcript_with_speakers,
                 speaker_summary,
-                meeting_type_id=meeting_type_id,
+                meeting_type_id=effective_meeting_type_id,
                 custom_prompt=custom_prompt,
-                mongo_service=mongo_service
+                mongo_service=mongo_service,
+                segments=segments,
+                return_metadata=True,
+                resolved_meeting_style=resolved_meeting_style,
+                cancel_check=_check_cancelled,
             )
+        _check_cancelled()
+
+        summary_metadata = {
+            **summary_metadata,
+            "meeting_style_id": effective_meeting_type_id,
+            "meeting_style_source": meeting_style_source,
+            "meeting_style_key": meeting_style_classification.get("meeting_type", "general_meeting"),
+            "agenda_detection_mode": detection_mode,
+            "agenda_count": len(detected_agendas),
+            "agenda_split_reasons": agenda_result.get("split_reasons", []),
+        }
 
         summary_time = time.time() - summary_start
         logger.info(f"Summary API completed in {summary_time:.2f}s")
@@ -455,6 +597,7 @@ class TranscribeSummaryPipeline:
                 'speaker_summary': speaker_summary,
             },
             'summary': summary_text,
+            'summary_metadata': summary_metadata,
             'agendas': enriched_agendas,
             'detection_mode': detection_mode,
             'speaker_clips': speaker_clips,

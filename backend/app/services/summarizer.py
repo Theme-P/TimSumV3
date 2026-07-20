@@ -1,23 +1,40 @@
-"""
-Enhanced Summarizer — Merged from ST + V3.
-
-Uses the configured NTC_MODEL via NTC API Gateway for all LLM calls.
-Adds: auto-classification, hierarchical chunking for long transcripts,
-and keyword-based fallback classification.
-"""
+"""Incremental, context-preserving meeting summarization via the NTC Gateway."""
 
 import requests
 import os
 import json
 import re
 import logging
-from typing import Dict, Optional
+import time
+from typing import Callable, Dict, Optional
 
 from pymongo.database import Database
 
 from ..models.meeting import MEETING_TYPES, get_meeting_focus_prompt
+from .cancellation import JobCancelled
+from .summary_pipeline import (
+    GROUNDING_RULES,
+    SUMMARY_GEMMA_EMPTY_WARNING,
+    SUMMARY_GEMMA_PARTIAL_WARNING,
+    SUMMARY_USER_WARNING,
+    append_user_warning,
+    build_token_check,
+    chunk_segments,
+    estimate_tokens,
+    sample_text_windows,
+    segments_from_text,
+    summarize_agenda_collection,
+    summarize_agenda_segments,
+    summarize_transcript_incrementally,
+    transcript_fallback_text,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _run_cancel_check(cancel_check: Optional[Callable[[], None]] = None):
+    if cancel_check:
+        cancel_check()
 
 
 def _clean_env_value(value: Optional[str]) -> Optional[str]:
@@ -27,22 +44,67 @@ def _clean_env_value(value: Optional[str]) -> Optional[str]:
     return value.strip().strip('"').strip("'")
 
 
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 # NTC AI Gateway API configuration
 DEFAULT_NTC_MODEL = "ict-ollama/gemma4:31b-it-q4_K_M"
-DEFAULT_FALLBACK_MODELS = ["ict-ollama/qwen2.5:72b-instruct-q4_K_M"]
+DEFAULT_GLM_FALLBACK_MODEL = "ict-ollama/glm4.7flashq4:latest"
+DEFAULT_QWEN_FALLBACK_MODEL = "ict-ollama/qwen2.5:72b-instruct-q4_K_M"
+DEFAULT_FALLBACK_MODEL_VALUE = DEFAULT_GLM_FALLBACK_MODEL
+DEFAULT_FALLBACK_MODELS = [
+    model.strip()
+    for model in os.getenv("NTC_FALLBACK_MODELS", DEFAULT_FALLBACK_MODEL_VALUE).split(",")
+    if model.strip()
+] or [DEFAULT_GLM_FALLBACK_MODEL]
 LEGACY_PRIMARY_MODELS = {"gpt-4.1"}
 LEGACY_FALLBACK_MODEL_ALIASES = {
-    "qwen2.5:72b-instruct-q4_K_M": "ict-ollama/qwen2.5:72b-instruct-q4_K_M",
+    "qwen2.5:72b-instruct-q4_K_M": DEFAULT_QWEN_FALLBACK_MODEL,
+    "seallms-v3-7b:latest": DEFAULT_GLM_FALLBACK_MODEL,
+    "ict-ollama/seallms-v3-7b:latest": DEFAULT_GLM_FALLBACK_MODEL,
 }
 LEGACY_FALLBACK_MODELS_TO_DROP = {"scb10x/typhoon2.1-gemma3-12b"}
+NON_REASONING_MODELS = {
+    DEFAULT_NTC_MODEL,
+    DEFAULT_GLM_FALLBACK_MODEL,
+    DEFAULT_QWEN_FALLBACK_MODEL,
+}
 
 NTC_API_KEY = _clean_env_value(os.getenv("NTC_API_KEY"))
 NTC_API_URL = _clean_env_value(os.getenv("NTC_API_URL")) or "https://aigateway.ntictsolution.com/v1/chat/completions"
 NTC_MODEL = _clean_env_value(os.getenv("NTC_MODEL")) or DEFAULT_NTC_MODEL
+NTC_LLM_MAX_RETRIES = _env_int("NTC_LLM_MAX_RETRIES", 1, 0, 3)
+NTC_LLM_RETRY_BACKOFF_SECONDS = _env_float("NTC_LLM_RETRY_BACKOFF_SECONDS", 2.0, 0.0, 30.0)
+NTC_LLM_MODEL_COOLDOWN_SECONDS = _env_int("NTC_LLM_MODEL_COOLDOWN_SECONDS", 600, 30, 3600)
+NTC_LLM_CONNECT_TIMEOUT_SECONDS = _env_int("NTC_LLM_CONNECT_TIMEOUT_SECONDS", 15, 5, 60)
+NTC_LLM_STREAM_RESPONSES = _env_bool("NTC_LLM_STREAM_RESPONSES", True)
 
-# Threshold: transcripts longer than this use hierarchical approach
-HIERARCHICAL_THRESHOLD = 50000  # characters
-
+_MODEL_COOLDOWN_UNTIL: dict[str, float] = {}
 
 def _serialize_mongo_doc(doc: Optional[dict]) -> Optional[dict]:
     if not doc:
@@ -98,6 +160,20 @@ def _sanitize_gateway_error(text: str) -> str:
     sanitized = re.sub(r"(Key Hash \(Token\)\s*=\s*)[A-Fa-f0-9]+", r"\1[redacted]", sanitized)
     sanitized = re.sub(r"sk-[A-Za-z0-9._-]+", "sk-[redacted]", sanitized)
     return sanitized[:1000]
+
+
+def _prompt_requests_json(system_prompt: str, user_prompt: str) -> bool:
+    return bool(re.search(r"\bjson\b", f"{system_prompt}\n{user_prompt}", flags=re.IGNORECASE))
+
+
+def _has_meaningful_json_value(value) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return any(_has_meaningful_json_value(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_has_meaningful_json_value(item) for item in value)
+    return value is not None
 
 
 def _normalize_model_name(value: Optional[str]) -> str:
@@ -178,51 +254,370 @@ def _get_template_for_meeting(meeting_type_id: int, mongo_service=None) -> dict:
 # NTC AI Gateway API Helper
 # ============================================================
 
+def _extract_response_content(response_data: dict, model: str, glm_text_wrapper: bool) -> str:
+    content = response_data["choices"][0]["message"]["content"]
+    if model == DEFAULT_GLM_FALLBACK_MODEL:
+        try:
+            structured_content = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Rejected unstructured GLM fallback response")
+            return ""
+        if glm_text_wrapper:
+            content = structured_content.get("response", "")
+        elif not _has_meaningful_json_value(structured_content):
+            logger.warning("Rejected empty GLM JSON fallback response")
+            return ""
+
+    usage = response_data.get("usage")
+    if isinstance(usage, dict):
+        logger.info(
+            "LLM usage model=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+            model,
+            usage.get("prompt_tokens"),
+            usage.get("completion_tokens"),
+            usage.get("total_tokens"),
+        )
+    return (content or "").strip()
+
+
+def _stream_delta_from_data(data: dict) -> str:
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    delta = choice.get("delta")
+    if isinstance(delta, dict) and delta.get("content") is not None:
+        return str(delta.get("content") or "")
+    message = choice.get("message")
+    if isinstance(message, dict) and message.get("content") is not None:
+        return str(message.get("content") or "")
+    if choice.get("text") is not None:
+        return str(choice.get("text") or "")
+    return ""
+
+
+def _is_read_timeout_exception(exc: BaseException) -> bool:
+    if exc.__class__.__name__ == "ReadTimeout":
+        return True
+    context = getattr(exc, "__context__", None)
+    if context is not None and context.__class__.__name__ == "ReadTimeout":
+        return True
+    return "read timed out" in str(exc).lower()
+
+
+def _read_streaming_response(
+    resp: requests.Response,
+    model: str,
+    timeout: Optional[int],
+) -> tuple[str, bool]:
+    parts: list[str] = []
+    timed_out = False
+    deadline = time.monotonic() + timeout if timeout is not None else None
+
+    try:
+        for raw_line in resp.iter_lines(decode_unicode=True):
+            now = time.monotonic()
+            if deadline is not None and now >= deadline:
+                timed_out = True
+                break
+            if not raw_line:
+                continue
+
+            line = raw_line.strip()
+            if line.startswith("data:"):
+                line = line[5:].strip()
+            if not line or line == "[DONE]":
+                break
+
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                logger.debug("Ignoring non-JSON LLM stream line for model %s", model)
+                continue
+
+            delta = _stream_delta_from_data(data)
+            if delta:
+                parts.append(delta)
+
+            usage = data.get("usage")
+            if isinstance(usage, dict):
+                logger.info(
+                    "LLM usage model=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+                    model,
+                    usage.get("prompt_tokens"),
+                    usage.get("completion_tokens"),
+                    usage.get("total_tokens"),
+                )
+    except requests.exceptions.RequestException as exc:
+        if not _is_read_timeout_exception(exc) or not parts:
+            raise
+        timed_out = True
+
+    content = "".join(parts).strip()
+    if timed_out and content:
+        logger.warning(
+            "LLM streaming model %s reached timeout; returning partial output chars=%s",
+            model,
+            len(content),
+        )
+    elif content:
+        logger.info("LLM streaming completed model=%s output_chars=%s", model, len(content))
+    return content, timed_out
+
+
+def _streaming_not_supported(status_code: int, error_text: str) -> bool:
+    return status_code in {400, 415, 422} and "stream" in error_text.lower()
+
+
 def _call_ntc_gateway(
     system_prompt: str,
     user_prompt: str,
     temperature: float = 0.3,
     max_tokens: int = 4000,
-    timeout: int = 120,
+    timeout: Optional[int] = 120,
     model_name: str = None,
+    cooldown_on_read_timeout: bool = True,
+    cooldown_on_api_error: bool = True,
 ) -> str:
-    """Call LLM via NTC AI Gateway (OpenAI-compatible). Returns content string or empty."""
+    """Call the NTC gateway with bounded retries and per-model cooldown."""
     if not NTC_API_KEY:
         logger.error("NTC_API_KEY not set")
+        return ""
+
+    model = model_name or NTC_MODEL
+    now = time.monotonic()
+    cooldown_until = _MODEL_COOLDOWN_UNTIL.get(model, 0)
+    if cooldown_until > now:
+        logger.warning(
+            "Skipping model %s during cooldown (%ss remaining)",
+            model,
+            max(1, round(cooldown_until - now)),
+        )
         return ""
 
     headers = {
         "Authorization": f"Bearer {NTC_API_KEY}",
         "Content-Type": "application/json",
     }
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    glm_text_wrapper = False
     payload = {
-        "model": model_name or NTC_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
+        "model": model,
+        "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
-
-    try:
-        resp = requests.post(NTC_API_URL, headers=headers, json=payload, timeout=timeout)
-        if resp.status_code >= 400:
-            logger.error(
-                "NTC AI Gateway API error (%s): %s",
-                resp.status_code,
-                _sanitize_gateway_error(resp.text) or resp.reason,
+    if model in NON_REASONING_MODELS:
+        payload.update({"think": False, "reasoning_effort": "none"})
+    if model == DEFAULT_GLM_FALLBACK_MODEL:
+        if _prompt_requests_json(system_prompt, user_prompt):
+            payload["response_format"] = {"type": "json_object"}
+        else:
+            glm_text_wrapper = True
+            messages[0]["content"] += (
+                "\nReturn only a JSON object whose response field contains the final answer. "
+                "Do not include analysis or reasoning."
             )
-            return ""
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "final_response",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {"response": {"type": "string"}},
+                        "required": ["response"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+
+    request_tokens = estimate_tokens(system_prompt) + estimate_tokens(user_prompt)
+    attempts = NTC_LLM_MAX_RETRIES + 1
+    retriable_statuses = {408, 425, 429, 500, 502, 503, 504}
+    read_timeout_label = "unlimited" if timeout is None else f"{timeout}s"
+    stream_response = NTC_LLM_STREAM_RESPONSES and model != DEFAULT_GLM_FALLBACK_MODEL
+    for attempt in range(1, attempts + 1):
+        logger.info(
+            "LLM request model=%s attempt=%s/%s estimated_input_tokens=%s "
+            "max_output_tokens=%s read_timeout=%s stream=%s",
+            model,
+            attempt,
+            attempts,
+            request_tokens,
+            max_tokens,
+            read_timeout_label,
+            stream_response,
+        )
+        request_payload = dict(payload)
+        request_headers = dict(headers)
+        request_streaming = stream_response
+        if request_streaming:
+            request_payload["stream"] = True
+            request_headers["Accept"] = "text/event-stream"
         try:
-            content = resp.json()["choices"][0]["message"]["content"]
-            return (content or "").strip()
-        except (KeyError, IndexError, TypeError, ValueError) as e:
-            logger.error(f"NTC AI Gateway response parse error: {e}")
+            resp = requests.post(
+                NTC_API_URL,
+                headers=request_headers,
+                json=request_payload,
+                timeout=(NTC_LLM_CONNECT_TIMEOUT_SECONDS, timeout),
+                stream=request_streaming,
+            )
+        except requests.exceptions.RequestException as exc:
+            logger.error(
+                "NTC AI Gateway request failed for model %s (attempt %s/%s): %s",
+                model,
+                attempt,
+                attempts,
+                exc,
+            )
+            is_read_timeout = _is_read_timeout_exception(exc)
+            if is_read_timeout:
+                if cooldown_on_read_timeout:
+                    logger.warning(
+                        "Model %s exceeded the read timeout; entering cooldown without duplicate retry",
+                        model,
+                    )
+                    _MODEL_COOLDOWN_UNTIL[model] = time.monotonic() + NTC_LLM_MODEL_COOLDOWN_SECONDS
+                else:
+                    logger.warning(
+                        "Primary model %s exceeded the read timeout; next pipeline stage may retry it",
+                        model,
+                    )
+                return ""
+            if attempt < attempts:
+                delay = NTC_LLM_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
+                logger.warning("Retrying model %s in %.1fs", model, delay)
+                time.sleep(delay)
+                continue
+            _MODEL_COOLDOWN_UNTIL[model] = time.monotonic() + NTC_LLM_MODEL_COOLDOWN_SECONDS
             return ""
-    except requests.exceptions.RequestException as e:
-        logger.error(f"NTC AI Gateway request failed: {e}")
-        return ""
+
+        if resp.status_code >= 400 and request_streaming:
+            error_text = _sanitize_gateway_error(resp.text) or resp.reason
+            if _streaming_not_supported(resp.status_code, error_text):
+                logger.warning(
+                    "NTC AI Gateway did not accept streaming for model %s; retrying this attempt without stream",
+                    model,
+                )
+                request_streaming = False
+                try:
+                    resp.close()
+                    resp = requests.post(
+                        NTC_API_URL,
+                        headers=headers,
+                        json=payload,
+                        timeout=(NTC_LLM_CONNECT_TIMEOUT_SECONDS, timeout),
+                    )
+                except requests.exceptions.RequestException as exc:
+                    logger.error(
+                        "NTC AI Gateway request failed for model %s (attempt %s/%s): %s",
+                        model,
+                        attempt,
+                        attempts,
+                        exc,
+                    )
+                    is_read_timeout = _is_read_timeout_exception(exc)
+                    if is_read_timeout:
+                        if cooldown_on_read_timeout:
+                            logger.warning(
+                                "Model %s exceeded the read timeout; entering cooldown without duplicate retry",
+                                model,
+                            )
+                            _MODEL_COOLDOWN_UNTIL[model] = time.monotonic() + NTC_LLM_MODEL_COOLDOWN_SECONDS
+                        else:
+                            logger.warning(
+                                "Primary model %s exceeded the read timeout; next pipeline stage may retry it",
+                                model,
+                            )
+                        return ""
+                    if attempt < attempts:
+                        delay = NTC_LLM_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
+                        logger.warning("Retrying model %s in %.1fs", model, delay)
+                        time.sleep(delay)
+                        continue
+                    _MODEL_COOLDOWN_UNTIL[model] = time.monotonic() + NTC_LLM_MODEL_COOLDOWN_SECONDS
+                    return ""
+
+        if resp.status_code >= 400:
+            error_text = _sanitize_gateway_error(resp.text) or resp.reason
+            model_not_found = "model" in error_text.lower() and "not found" in error_text.lower()
+            retriable = resp.status_code in retriable_statuses and not model_not_found
+            logger.error(
+                "NTC AI Gateway API error for model %s (%s, attempt %s/%s): %s",
+                model,
+                resp.status_code,
+                attempt,
+                attempts,
+                error_text,
+            )
+            if retriable and attempt < attempts:
+                delay = NTC_LLM_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
+                logger.warning("Retrying model %s in %.1fs", model, delay)
+                time.sleep(delay)
+                continue
+            if model_not_found or (retriable and cooldown_on_api_error):
+                _MODEL_COOLDOWN_UNTIL[model] = time.monotonic() + NTC_LLM_MODEL_COOLDOWN_SECONDS
+            return ""
+
+        if request_streaming:
+            try:
+                result, stream_timed_out = _read_streaming_response(resp, model, timeout)
+            except requests.exceptions.RequestException as exc:
+                partial = ""
+                logger.error(
+                    "NTC AI Gateway stream failed for model %s (attempt %s/%s): %s",
+                    model,
+                    attempt,
+                    attempts,
+                    exc,
+                )
+                is_read_timeout = _is_read_timeout_exception(exc)
+                if is_read_timeout:
+                    if cooldown_on_read_timeout:
+                        logger.warning(
+                            "Model %s exceeded the streaming read timeout; entering cooldown",
+                            model,
+                        )
+                        _MODEL_COOLDOWN_UNTIL[model] = time.monotonic() + NTC_LLM_MODEL_COOLDOWN_SECONDS
+                    else:
+                        logger.warning(
+                            "Primary model %s exceeded the streaming read timeout",
+                            model,
+                        )
+                    return partial
+                if attempt < attempts:
+                    delay = NTC_LLM_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
+                    logger.warning("Retrying model %s in %.1fs", model, delay)
+                    time.sleep(delay)
+                    continue
+                _MODEL_COOLDOWN_UNTIL[model] = time.monotonic() + NTC_LLM_MODEL_COOLDOWN_SECONDS
+                return ""
+            finally:
+                resp.close()
+
+            if result:
+                _MODEL_COOLDOWN_UNTIL.pop(model, None)
+                return result
+            if stream_timed_out:
+                return ""
+            logger.warning("LLM stream returned no content for model %s", model)
+            return ""
+
+        try:
+            response_data = resp.json()
+            result = _extract_response_content(response_data, model, glm_text_wrapper)
+            if result:
+                _MODEL_COOLDOWN_UNTIL.pop(model, None)
+            return result
+        except (AttributeError, KeyError, IndexError, TypeError, ValueError) as e:
+            logger.error("NTC AI Gateway response parse error for model %s: %s", model, e)
+            return ""
+
+    return ""
 
 
 def _call_llm_with_fallback(
@@ -230,16 +625,20 @@ def _call_llm_with_fallback(
     user_prompt: str,
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
-    timeout: int = 120,
+    timeout: Optional[int] = 180,
     mongo_service=None,
     override_config: dict = None,
+    primary_only: bool = False,
+    cancel_check: Optional[Callable[[], None]] = None,
 ) -> str:
     """Try primary model, fallback to other models via NTC AI Gateway."""
+    _run_cancel_check(cancel_check)
     config = _normalize_llm_config(override_config) if override_config else get_llm_config(mongo_service)
     effective_temperature = temperature if temperature is not None else config["temperature"]
     effective_max_tokens = max_tokens if max_tokens is not None else config["max_tokens"]
     
     # Try primary
+    _run_cancel_check(cancel_check)
     logger.info(f"Attempting summary with primary model: {config['primary_model']}")
     result = _call_ntc_gateway(
         system_prompt,
@@ -248,13 +647,20 @@ def _call_llm_with_fallback(
         effective_max_tokens,
         timeout,
         model_name=config["primary_model"],
+        cooldown_on_read_timeout=False,
+        cooldown_on_api_error=False,
     )
     
     if result and result.strip():
         return result
+
+    if primary_only:
+        logger.warning("Primary model failed; adaptive summary recovery will split this chunk")
+        return ""
         
     logger.warning("Primary model failed, trying fallback models...")
     for fallback_model in config["fallback_models"]:
+        _run_cancel_check(cancel_check)
         logger.info(f"Attempting summary with fallback model: {fallback_model}")
         # All configured models are served via NTC AI Gateway (OpenAI-compatible)
         result = _call_ntc_gateway(
@@ -305,7 +711,12 @@ def _create_fallback_summary(transcription_text: str) -> str:
 # Speaker Name Detection (from ST)
 # ============================================================
 
-def detect_speaker_names(transcript_with_speakers: str, speakers: list) -> dict:
+def detect_speaker_names(
+    transcript_with_speakers: str,
+    speakers: list,
+    mongo_service=None,
+    cancel_check: Optional[Callable[[], None]] = None,
+) -> dict:
     """
     Use the configured LLM to detect self-introductions in the transcript
     and map speaker labels to real names.
@@ -315,12 +726,13 @@ def detect_speaker_names(transcript_with_speakers: str, speakers: list) -> dict:
         print("   ⚠️ No API key, skipping name detection")
         return {}
 
-    transcript_excerpt = transcript_with_speakers[:5000]
+    transcript_excerpt = sample_text_windows(transcript_with_speakers, max_chars=12000, windows=3)
     speakers_list = ", ".join(speakers)
 
     system = """คุณคือ AI ที่วิเคราะห์บทสนทนาภาษาไทย อังกฤษ และจีน เพื่อหาการแนะนำตัวของผู้พูด
 
-หน้าที่: อ่าน transcript แล้วหาว่าผู้พูดคนไหนแนะนำตัวเอง หรือถูกเรียกชื่อ/แนะนำโดยคนอื่น
+หน้าที่: อ่านตัวอย่างจากช่วงต้น ช่วงกลาง และช่วงท้าย แล้วหาว่าผู้พูดคนไหนแนะนำตัวเอง
+หรือถูกเรียกชื่อ/แนะนำโดยคนอื่น ให้ยืนยันจากข้อความจริงเท่านั้นและห้ามเดาชื่อจากบริบท
 
 ตัวอย่างการแนะนำตัว (ไทย):
 - "สวัสดีครับ ผม สมชาย ใจดี ครับ" → name: "สมชาย ใจดี"
@@ -347,11 +759,21 @@ def detect_speaker_names(transcript_with_speakers: str, speakers: list) -> dict:
 4. ชื่อภาษาจีนให้ใส่คำอ่านภาษาไทยในวงเล็บ เช่น 王明 (หวัง หมิง)
 5. ถ้าพบตำแหน่งแต่ไม่พบชื่อ ให้ข้ามไป
 6. ถ้าไม่พบการแนะนำตัวเลย ให้ตอบ {}
-7. ตอบ JSON เท่านั้น ไม่ต้องมีคำอธิบาย"""
+7. ถ้าชื่อเดียวกันถูกอ้างถึงต่างกัน ให้เลือกค่าที่มีหลักฐานชัดที่สุด ห้ามรวมคนละคนเข้าด้วยกัน
+8. ตอบ JSON เท่านั้น ไม่ต้องมีคำอธิบาย"""
 
     user = f"ผู้พูดที่ตรวจพบ: {speakers_list}\n\nTranscript:\n{transcript_excerpt}"
 
-    content = _call_ntc_gateway(system, user, temperature=0.1, max_tokens=500, timeout=30)
+    _run_cancel_check(cancel_check)
+    content = _call_llm_with_fallback(
+        system,
+        user,
+        temperature=0.1,
+        max_tokens=700,
+        timeout=150,
+        mongo_service=mongo_service,
+        cancel_check=cancel_check,
+    )
     if not content:
         return {}
 
@@ -405,7 +827,10 @@ MEETING_TYPES:
   "key_indicators": ["คำสำคัญ"],
   "participants_level": "executive/management/team",
   "meeting_tone": "formal/semi-formal/informal"
-}"""
+}
+
+เลือกประเภทหลักเพียงประเภทเดียวจากรายการข้างต้น ใช้หลักฐานที่ปรากฏในตัวอย่างทุกช่วง
+ห้ามเดาจากชื่อบุคคลหรือข้อความเปิดประชุมเพียงอย่างเดียว และตอบ JSON เท่านั้น"""
 
 # Keyword fallback mapping
 KEYWORD_PATTERNS = {
@@ -449,12 +874,28 @@ def _fallback_classification(transcription: str) -> Dict:
     }
 
 
-def classify_meeting_type(transcription: str) -> Dict:
+def classify_meeting_type(
+    transcription: str,
+    mongo_service=None,
+    cancel_check: Optional[Callable[[], None]] = None,
+) -> Dict:
     """Classify meeting type using the configured LLM with keyword fallback."""
-    sample = transcription[:5000]
-    user_msg = f"วิเคราะห์และจำแนกประเภทการประชุมจาก transcript ต่อไปนี้:\n\n{sample}"
+    _run_cancel_check(cancel_check)
+    sample = sample_text_windows(transcription, max_chars=12000, windows=3)
+    user_msg = f"""วิเคราะห์และจำแนกประเภทการประชุมจากตัวอย่างช่วงต้น กลาง และท้ายต่อไปนี้
+พิจารณาภาพรวมทุกช่วง ไม่ให้น้ำหนักเฉพาะช่วงเปิดประชุม และห้ามอนุมานสิ่งที่ไม่มีในตัวอย่าง
 
-    content = _call_ntc_gateway(CLASSIFICATION_SYSTEM, user_msg, temperature=0.1, max_tokens=500, timeout=30)
+{sample}"""
+
+    content = _call_llm_with_fallback(
+        CLASSIFICATION_SYSTEM,
+        user_msg,
+        temperature=0.1,
+        max_tokens=500,
+        timeout=90,
+        mongo_service=mongo_service,
+        cancel_check=cancel_check,
+    )
     if not content:
         return _fallback_classification(transcription)
 
@@ -468,39 +909,57 @@ def classify_meeting_type(transcription: str) -> Dict:
         return _fallback_classification(transcription)
 
 
+def resolve_meeting_style(
+    transcription: str,
+    meeting_type_id: int = 0,
+    mongo_service=None,
+    cancel_check: Optional[Callable[[], None]] = None,
+) -> tuple[int, Dict, str]:
+    """Resolve output style/template separately from agenda segmentation."""
+    _run_cancel_check(cancel_check)
+    if meeting_type_id == 0:
+        classification = classify_meeting_type(
+            transcription,
+            mongo_service=mongo_service,
+            cancel_check=cancel_check,
+        )
+        detected_id = _MEETING_KEY_TO_ID.get(
+            classification.get("meeting_type", "general_meeting"), 11
+        )
+        logger.info(
+            "Auto-classified meeting style as: %s -> ID %s",
+            classification.get("meeting_type"),
+            detected_id,
+        )
+        return detected_id, classification, "auto"
+
+    return (
+        meeting_type_id,
+        {
+            "meeting_type": _MEETING_ID_TO_KEY.get(meeting_type_id, "general_meeting"),
+            "confidence": 1.0,
+            "key_indicators": [],
+        },
+        "manual",
+    )
+
+
 # ============================================================
 # Text Chunking (from V3, smart boundary)
 # ============================================================
 
 def split_text_into_chunks(text: str, max_tokens: int = 30000) -> list[str]:
     """
-    Split text into chunks with smart boundary detection.
-    NTC Gateway models have large context windows, so we use larger chunks.
+    Compatibility chunker for V1 fallback, using the same Thai-aware token budget as V2.
     """
-    words = text.split()
-    max_words = int(max_tokens * 0.75)  # 1 token ≈ 0.75 Thai words
-    chunks: list[str] = []
-    current_chunk: list[str] = []
-
-    sentence_markers = ['ค่ะ', 'ครับ', 'นะครับ', 'นะคะ', 'วาระที่', 'ประชุม', 'หัวข้อ']
-
-    for word in words:
-        current_chunk.append(word)
-        if len(current_chunk) >= max_words:
-            # Try to cut at a sentence boundary
-            for i in range(len(current_chunk) - 1, max(0, len(current_chunk) - 500), -1):
-                if any(marker in current_chunk[i] for marker in sentence_markers):
-                    chunks.append(' '.join(current_chunk[:i + 1]))
-                    current_chunk = current_chunk[i + 1:]
-                    break
-            else:
-                chunks.append(' '.join(current_chunk))
-                current_chunk = []
-
-    if current_chunk:
-        chunks.append(' '.join(current_chunk))
-
-    logger.info(f"Split text into {len(chunks)} chunks")
+    pseudo_segments = segments_from_text(text)
+    structured_chunks = chunk_segments(
+        pseudo_segments,
+        max_tokens=max_tokens,
+        overlap_tokens=0,
+    )
+    chunks = [chunk["text"] for chunk in structured_chunks]
+    logger.info("Split text into %s token-budgeted chunks", len(chunks))
     return chunks
 
 
@@ -510,7 +969,9 @@ def split_text_into_chunks(text: str, max_tokens: int = 30000) -> list[str]:
 
 def _summarize_chunk(chunk: str, chunk_idx: int, total_chunks: int, mongo_service=None) -> str:
     """Summarize a single chunk of transcript."""
-    system = "คุณคือผู้เชี่ยวชาญในการสรุปการประชุมอย่างละเอียด กรุณาสรุปเนื้อหาการประชุมโดยรักษาข้อมูลสำคัญทั้งหมดไว้ ไม่ให้สูญหาย สรุปเป็นภาษาไทยเสมอ ไม่ว่าเนื้อหาต้นฉบับจะเป็นภาษาอะไร คงคำศัพท์เฉพาะทางภาษาอังกฤษไว้ตามเดิม ถ้ามีภาษาจีนหรือภาษาอื่นให้แปลเป็นไทยและใส่คำต้นฉบับในวงเล็บ"
+    system = f"""คุณคือผู้เชี่ยวชาญในการสรุปการประชุมอย่างละเอียด
+รักษาลำดับเหตุการณ์และข้อมูลสำคัญทั้งหมดของช่วงนี้
+{GROUNDING_RULES}"""
 
     user = f"""กรุณาสรุปส่วนการประชุมนี้อย่างละเอียด โดยรักษาข้อมูลสำคัญทั้งหมดไว้:
 
@@ -532,7 +993,7 @@ def _summarize_chunk(chunk: str, chunk_idx: int, total_chunks: int, mongo_servic
         user,
         temperature=0.2,
         max_tokens=4000,
-        timeout=120,
+        timeout=180,
         mongo_service=mongo_service,
     )
 
@@ -566,7 +1027,7 @@ def _consolidate_summaries(
 {focus_prompt}
 
 คุณกำลังสร้างสรุปขั้นสุดท้ายจากการประชุมยาว กรุณาให้ความสำคัญกับความครบถ้วนและการไม่สูญหายของข้อมูลสำคัญ
-สรุปเป็นภาษาไทยเสมอ ไม่ว่าเนื้อหาต้นฉบับจะเป็นภาษาอะไร คงคำศัพท์เฉพาะทางภาษาอังกฤษไว้ตามเดิม ถ้ามีภาษาจีนหรือภาษาอื่นให้แปลเป็นไทยและใส่คำต้นฉบับในวงเล็บ"""
+{GROUNDING_RULES}"""
 
     if custom_prompt:
         system += f"\n\n**คำสั่งเพิ่มเติมจากผู้ใช้:**\n{custom_prompt}"
@@ -589,8 +1050,8 @@ def _consolidate_summaries(
     result = _call_llm_with_fallback(
         system, user, 
         temperature=0.3, 
-        max_tokens=2000, 
-        timeout=120,
+        max_tokens=6000,
+        timeout=180,
         mongo_service=mongo_service
     )
     if not result:
@@ -638,48 +1099,94 @@ def summarize_with_diarization(
     language: str = "Thai",
     custom_prompt: str = "",
     mongo_service=None,
-) -> str:
+    segments: Optional[list[dict]] = None,
+    return_metadata: bool = False,
+    resolved_meeting_style: Optional[tuple[int, Dict, str]] = None,
+    cancel_check: Optional[Callable[[], None]] = None,
+):
     """
     Summarize transcription with speaker diarization data.
-    Routes to hierarchical approach for long transcripts.
+    Uses the incremental chunk-and-reduce pipeline for every transcript length.
     """
+    _run_cancel_check(cancel_check)
     if not NTC_API_KEY:
-        return "Error: NTC_API_KEY not found in environment variables"
-
-    # Auto-classify if meeting_type_id == 0
-    classification = None
-    if meeting_type_id == 0:
-        classification = classify_meeting_type(transcript_with_speakers)
-        detected_id = _MEETING_KEY_TO_ID.get(
-            classification.get("meeting_type", "general_meeting"), 11
-        )
-        logger.info(f"Auto-classified as: {classification.get('meeting_type')} → ID {detected_id}")
-    else:
-        classification = {
-            "meeting_type": _MEETING_ID_TO_KEY.get(meeting_type_id, "general_meeting"),
-            "confidence": 1.0,
-            "key_indicators": [],
+        source_segments = segments or segments_from_text(transcript_with_speakers)
+        result = append_user_warning(transcript_fallback_text(source_segments))
+        metadata = {
+            "version": "incremental",
+            "degraded": True,
+            "error": "NTC_API_KEY is not configured",
+            "user_warning": SUMMARY_USER_WARNING,
         }
+        return (result, metadata) if return_metadata else result
+
+    if resolved_meeting_style:
+        effective_type_id, classification, meeting_style_source = resolved_meeting_style
+    else:
+        effective_type_id, classification, meeting_style_source = resolve_meeting_style(
+            transcript_with_speakers,
+            meeting_type_id,
+            mongo_service=mongo_service,
+            cancel_check=cancel_check,
+        )
 
     if custom_prompt:
         logger.info(f"Custom prompt provided ({len(custom_prompt)} chars)")
 
-    # Route: hierarchical for long transcripts
-    if len(transcript_with_speakers) > HIERARCHICAL_THRESHOLD:
-        logger.info(f"Using HIERARCHICAL approach ({len(transcript_with_speakers)} chars)")
-        return _summarize_hierarchical(
-            transcript_with_speakers,
-            speaker_summary,
-            meeting_type_id,
-            classification,
-            custom_prompt,
+    template_data = _get_template_for_meeting(effective_type_id, mongo_service=mongo_service)
+
+    def llm_call(system_prompt, user_prompt, **kwargs):
+        _run_cancel_check(cancel_check)
+        return _call_llm_with_fallback(
+            system_prompt,
+            user_prompt,
             mongo_service=mongo_service,
+            cancel_check=cancel_check,
+            **kwargs,
         )
 
-    # Standard: single-call approach for shorter transcripts
-    return _summarize_standard(
-        transcript_with_speakers, speaker_summary, meeting_type_id, classification, custom_prompt, mongo_service=mongo_service
+    logger.info(
+        "Using incremental summary pipeline for %s estimated input tokens",
+        estimate_tokens(transcript_with_speakers),
     )
+    try:
+        _run_cancel_check(cancel_check)
+        result, metadata = summarize_transcript_incrementally(
+            transcript=transcript_with_speakers,
+            segments=segments,
+            meeting_type_id=effective_type_id,
+            template_prompt=template_data["system_prompt"],
+            custom_prompt=custom_prompt,
+            llm_call=llm_call,
+        )
+    except Exception as exc:
+        if isinstance(exc, JobCancelled):
+            raise
+        logger.exception("Incremental summary pipeline failed; preserving transcript as degraded output")
+        source_segments = segments or segments_from_text(transcript_with_speakers)
+        result = append_user_warning(transcript_fallback_text(source_segments))
+        metadata = {
+            "version": "incremental",
+            "degraded": True,
+            "error": exc.__class__.__name__,
+            "user_warning": SUMMARY_USER_WARNING,
+        }
+
+    if not result:
+        source_segments = segments or segments_from_text(transcript_with_speakers)
+        result = append_user_warning(transcript_fallback_text(source_segments))
+        metadata = {
+            **metadata,
+            "version": "incremental",
+            "degraded": True,
+            "user_warning": SUMMARY_USER_WARNING,
+        }
+    metadata.update({
+        "meeting_style_id": effective_type_id,
+        "meeting_style_source": meeting_style_source,
+        "meeting_style_key": classification.get("meeting_type", "general_meeting"),
+    })
+    return (result, metadata) if return_metadata else result
 
 
 def _summarize_standard(
@@ -705,8 +1212,11 @@ def _summarize_standard(
 
     speaker_info = "\n".join(speaker_info_lines)
     num_speakers = len(speakers_time)
-    template_data = _get_template_for_meeting(meeting_type_id, mongo_service=mongo_service)
-    system = template_data["system_prompt"]
+    effective_type_id = meeting_type_id or _MEETING_KEY_TO_ID.get(
+        classification.get("meeting_type", "general_meeting"), 11
+    )
+    template_data = _get_template_for_meeting(effective_type_id, mongo_service=mongo_service)
+    system = f"{template_data['system_prompt']}\n\n{GROUNDING_RULES}"
     
     # Replace placeholder if present, otherwise append
     if "{custom_prompt}" in system:
@@ -730,7 +1240,7 @@ def _summarize_standard(
         user, 
         temperature=template_data.get("temperature", 0.4), 
         max_tokens=template_data.get("max_tokens", 4000), 
-        timeout=120,
+        timeout=180,
         mongo_service=mongo_service
     )
     if not result:
@@ -751,7 +1261,7 @@ def _summarize_hierarchical(
     logger.info("Starting hierarchical summarization")
 
     # Step 1: Split into chunks
-    chunks = split_text_into_chunks(transcript_with_speakers, max_tokens=30000)
+    chunks = split_text_into_chunks(transcript_with_speakers, max_tokens=12000)
     logger.info(f"Split into {len(chunks)} chunks")
 
     # Step 2: Summarize each chunk
@@ -819,12 +1329,14 @@ def _summarize_single_agenda(
 ```
 
 **กฎ:**
+- ใช้เฉพาะข้อเท็จจริงในเนื้อหาวาระนี้ และรักษาลำดับเหตุการณ์
 - สรุปเป็นภาษาไทยเสมอ ไม่ว่า transcript จะเป็นภาษาอะไร (ไทย/อังกฤษ/จีน/ผสม)
 - คงคำศัพท์เฉพาะทาง ชื่อเฉพาะ และคำย่อภาษาอังกฤษไว้ตามเดิม
 - ถ้ามีการพูดภาษาจีนหรือภาษาอื่น ให้แปลเป็นภาษาไทยแล้วใส่คำต้นฉบับในวงเล็บ
 - ใช้ bullet points ใน summary
 - ระบุชื่อผู้พูดเมื่อกล่าวถึงการสั่งงาน/ความเห็น
 - ถ้าไม่มีมติหรือ action items ให้ตอบ list ว่าง []
+- แยกข้อเสนอออกจากมติที่ยืนยันแล้ว และเก็บเรื่องที่ยังไม่มีข้อสรุป
 - ตอบ JSON เท่านั้น ไม่ต้องมีข้อความอื่น"""
 
     if custom_prompt:
@@ -839,7 +1351,7 @@ def _summarize_single_agenda(
         system, user, 
         temperature=template_data.get("temperature", 0.4) if template_data else 0.2, 
         max_tokens=3000, 
-        timeout=90,
+        timeout=180,
         mongo_service=mongo_service
     )
 
@@ -906,7 +1418,8 @@ def _generate_executive_summary(
 3. รวบรวมมติที่ประชุมทั้งหมด
 4. รวบรวมงานมอบหมายทั้งหมด
 5. ใช้ bullet points
-6. สรุปเป็นภาษาไทยเสมอ ไม่ว่าเนื้อหาต้นฉบับจะเป็นภาษาอะไร คงคำศัพท์เฉพาะทางภาษาอังกฤษไว้ตามเดิม ถ้ามีภาษาจีนหรือภาษาอื่นให้แปลเป็นไทยและใส่คำต้นฉบับในวงเล็บ"""
+6. รักษาลำดับวาระ ตัวเลข มติ งานมอบหมาย ความเห็นต่าง และเรื่องที่ยังไม่จบ
+7. {GROUNDING_RULES}"""
 
     if custom_prompt:
         system += f"\n\n**คำสั่งเพิ่มเติมจากผู้ใช้:**\n{custom_prompt}"
@@ -921,7 +1434,7 @@ def _generate_executive_summary(
         system, user, 
         temperature=template_data.get("temperature", 0.2),
         max_tokens=template_data.get("max_tokens", 4000), 
-        timeout=120,
+        timeout=180,
         mongo_service=mongo_service
     )
     if not result:
@@ -932,13 +1445,164 @@ def _generate_executive_summary(
     return result
 
 
+def _summarize_with_agendas_incrementally(
+    segments: list[dict],
+    agendas: list[dict],
+    meeting_type_id: int,
+    custom_prompt: str,
+    mongo_service=None,
+    resolved_meeting_style: Optional[tuple[int, Dict, str]] = None,
+    cancel_check: Optional[Callable[[], None]] = None,
+) -> tuple[str, list[dict], dict]:
+    _run_cancel_check(cancel_check)
+    transcript = "\n".join(
+        f"[{seg.get('speaker', '?')}]: {str(seg.get('text') or '').strip()}"
+        for seg in segments
+        if str(seg.get("text") or "").strip()
+    )
+    input_tokens = estimate_tokens(transcript)
+    overall_chunks = chunk_segments(segments)
+    token_check = build_token_check(input_tokens, len(overall_chunks))
+    logger.info(
+        "WhisperX transcript token check (agenda flow): estimated_tokens=%s "
+        "max_tokens_per_chunk=%s exceeds_max=%s chunks=%s",
+        token_check["estimated_tokens"],
+        token_check["max_tokens_per_chunk"],
+        token_check["exceeds_max_tokens"],
+        len(overall_chunks),
+    )
+    if resolved_meeting_style:
+        effective_type_id, classification, meeting_style_source = resolved_meeting_style
+    else:
+        effective_type_id, classification, meeting_style_source = resolve_meeting_style(
+            transcript,
+            meeting_type_id,
+            mongo_service=mongo_service,
+            cancel_check=cancel_check,
+        )
+
+    template_data = _get_template_for_meeting(effective_type_id, mongo_service=mongo_service)
+
+    def llm_call(system_prompt, user_prompt, **kwargs):
+        _run_cancel_check(cancel_check)
+        return _call_llm_with_fallback(
+            system_prompt,
+            user_prompt,
+            mongo_service=mongo_service,
+            cancel_check=cancel_check,
+            **kwargs,
+        )
+
+    enriched: list[dict] = []
+    records: list[dict] = []
+    agenda_metadata: list[dict] = []
+    total = len(agendas)
+    for agenda in agendas:
+        _run_cancel_check(cancel_check)
+        start_idx = agenda["start_segment_idx"]
+        end_idx = agenda["end_segment_idx"]
+        agenda_segments = [
+            {**segment, "_source_index": start_idx + offset}
+            for offset, segment in enumerate(segments[start_idx:end_idx + 1])
+        ]
+        result, record, metadata = summarize_agenda_segments(
+            segments=agenda_segments,
+            agenda_title=agenda["title"],
+            agenda_number=agenda["agenda_number"],
+            total_agendas=total,
+            custom_prompt=custom_prompt,
+            llm_call=llm_call,
+            template_prompt=template_data["system_prompt"],
+        )
+        _run_cancel_check(cancel_check)
+        enriched.append({
+            **agenda,
+            "summary": result["summary"],
+            "decisions": result["decisions"],
+            "action_items": result["action_items"],
+        })
+        records.append(record)
+        agenda_metadata.append(metadata)
+
+    if records and all(record.get("failed_chunks") for record in records):
+        _run_cancel_check(cancel_check)
+        metadata = {
+            "version": "incremental-agenda",
+            "meeting_style_id": effective_type_id,
+            "meeting_style_source": meeting_style_source,
+            "meeting_style_key": classification.get("meeting_type", "general_meeting"),
+            "agenda_count": len(records),
+            "token_check": token_check,
+            "coverage_complete": False,
+            "covered_segments": 0,
+            "total_segments": sum(
+                1 for segment in segments if str(segment.get("text") or "").strip()
+            ),
+            "failed_chunks": sorted({
+                chunk_number
+                for record in records
+                for chunk_number in record.get("failed_chunks", [])
+            }),
+            "extraction_complete": False,
+            "degraded": True,
+            "user_warning": SUMMARY_GEMMA_EMPTY_WARNING,
+            "fallback_strategy": "transcript_fallback_no_gemma_chunks_completed",
+            "agendas": agenda_metadata,
+            "recovery_attempted": False,
+            "recovery_succeeded": False,
+            "recovery_skipped": "fast_summary_no_extra_llm_call",
+        }
+        fallback = transcript_fallback_text(segments)
+        return append_user_warning(fallback, SUMMARY_GEMMA_EMPTY_WARNING), enriched, metadata
+
+    _run_cancel_check(cancel_check)
+    executive_summary, metadata = summarize_agenda_collection(
+        records=records,
+        meeting_type_id=effective_type_id,
+        template_prompt=template_data["system_prompt"],
+        custom_prompt=custom_prompt,
+        llm_call=llm_call,
+        input_tokens=input_tokens,
+    )
+    expected_ids = {
+        index for index, segment in enumerate(segments)
+        if str(segment.get("text") or "").strip()
+    }
+    covered_ids = {
+        source_id
+        for record in records
+        for source_id in record.get("coverage", [])
+    }
+    coverage_degraded = not expected_ids.issubset(covered_ids)
+    pipeline_degraded = bool(metadata.get("degraded"))
+    metadata.update({
+        "meeting_style_id": effective_type_id,
+        "meeting_style_source": meeting_style_source,
+        "meeting_style_key": classification.get("meeting_type", "general_meeting"),
+        "coverage_complete": expected_ids.issubset(covered_ids),
+        "covered_segments": len(expected_ids & covered_ids),
+        "total_segments": len(expected_ids),
+        "token_check": token_check,
+        "agendas": agenda_metadata,
+        "degraded": coverage_degraded or pipeline_degraded,
+    })
+    if metadata["degraded"]:
+        metadata["user_warning"] = metadata.get("user_warning") or SUMMARY_GEMMA_PARTIAL_WARNING
+        metadata["fallback_strategy"] = metadata.get("fallback_strategy") or "gemma_partial_summary"
+        executive_summary = append_user_warning(executive_summary, metadata["user_warning"])
+    return executive_summary, enriched, metadata
+
+
 def summarize_with_agendas(
     segments: list[dict],
     agendas: list[dict],
     meeting_type_id: int = 0,
     custom_prompt: str = "",
     mongo_service=None,
-) -> tuple[str, list[dict]]:
+    return_metadata: bool = False,
+    resolved_meeting_style: Optional[tuple[int, Dict, str]] = None,
+    cancel_check: Optional[Callable[[], None]] = None,
+):
     """
     Summarize meeting with agenda-aware approach.
 
@@ -954,56 +1618,32 @@ def summarize_with_agendas(
         (executive_summary: str, enriched_agendas: list[dict])
         Each enriched agenda has added: "summary", "decisions", "action_items"
     """
-    total = len(agendas)
-    logger.info(f"Starting agenda-aware summarization for {total} agendas")
-
-    enriched: list[dict] = []
-
-    for agenda in agendas:
-        start_idx = agenda["start_segment_idx"]
-        end_idx = agenda["end_segment_idx"]
-        title = agenda["title"]
-        number = agenda["agenda_number"]
-
-        # Slice transcript for this agenda
-        agenda_segments = segments[start_idx : end_idx + 1]
-        agenda_lines = []
-        for seg in agenda_segments:
-            speaker = seg.get("speaker", "?")
-            text = seg.get("text", "").strip()
-            if text:
-                agenda_lines.append(f"[{speaker}]: {text}")
-
-        agenda_transcript = "\n".join(agenda_lines)
-
-        logger.info(
-            f"Summarizing agenda {number}/{total}: '{title}' "
-            f"(segments {start_idx}-{end_idx}, {len(agenda_transcript)} chars)"
-        )
-
-        result = _summarize_single_agenda(
-            agenda_transcript=agenda_transcript,
-            agenda_title=title,
-            agenda_number=number,
-            total_agendas=total,
-            meeting_type_id=meeting_type_id,
-            custom_prompt=custom_prompt,
+    try:
+        _run_cancel_check(cancel_check)
+        result = _summarize_with_agendas_incrementally(
+            segments,
+            agendas,
+            meeting_type_id,
+            custom_prompt,
             mongo_service=mongo_service,
+            resolved_meeting_style=resolved_meeting_style,
+            cancel_check=cancel_check,
         )
-
-        enriched_agenda = {
-            **agenda,
-            "summary": result["summary"],
-            "decisions": result["decisions"],
-            "action_items": result["action_items"],
-        }
-        enriched.append(enriched_agenda)
-
-    # Generate executive summary from all per-agenda summaries
-    logger.info("Generating executive summary from per-agenda summaries")
-    executive_summary = _generate_executive_summary(
-        enriched, meeting_type_id, custom_prompt, mongo_service=mongo_service
-    )
-
-    logger.info(f"Agenda-aware summarization complete: {len(enriched)} agendas")
-    return executive_summary, enriched
+    except Exception as exc:
+        if isinstance(exc, JobCancelled):
+            raise
+        logger.exception("Incremental agenda summary failed; preserving transcript as degraded output")
+        result = (
+            append_user_warning(transcript_fallback_text(segments)),
+            [{**agenda, "summary": "", "decisions": [], "action_items": []} for agenda in agendas],
+            {
+                "version": "incremental-agenda",
+                "agenda_count": len(agendas),
+                "degraded": True,
+                "error": exc.__class__.__name__,
+                "user_warning": SUMMARY_USER_WARNING,
+            },
+        )
+    if return_metadata:
+        return result
+    return result[0], result[1]
