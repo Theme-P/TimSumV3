@@ -31,6 +31,8 @@ class User(BaseModel):
     phone: Optional[str] = None
     organization: Optional[str] = None
     status: str = USER_STATUS_APPROVED  # default approved for admin-created users
+    auth_version: int = Field(default=1, ge=1)
+    deletion_pending: bool = False
     registered_at: Optional[datetime] = None
     approved_at: Optional[datetime] = None
     approved_by: Optional[str] = None  # admin user_id who approved
@@ -47,6 +49,8 @@ class UserData(BaseModel):
     username: str
     email: str
     role: str
+    auth_version: int = Field(default=1, ge=1)
+    deletion_pending: bool = False
 
     model_config = ConfigDict(
         arbitrary_types_allowed=True,

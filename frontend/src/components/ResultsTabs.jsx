@@ -31,15 +31,6 @@ function ResultsTabs({ result, meetingType = 0, token }) {
         return speakerLabel
     }
 
-    const handleCopyText = async (text, label) => {
-        try {
-            await navigator.clipboard.writeText(text || '')
-            setStatusMessage({ type: 'success', text: `คัดลอก ${label} แล้ว` })
-        } catch {
-            setStatusMessage({ type: 'error', text: `คัดลอก ${label} ไม่สำเร็จ` })
-        }
-    }
-
     const handleDownloadTranscriptDocx = async () => {
         setDownloading('transcript')
         setStatusMessage(null)
@@ -89,6 +80,7 @@ function ResultsTabs({ result, meetingType = 0, token }) {
                     speaker_summary: result.transcript.speaker_summary,
                     meeting_type_id: meetingType,
                     agendas: result.agendas || [],
+                    summary_warning: result.summary_metadata?.user_warning || '',
                 })
             })
 
@@ -125,8 +117,12 @@ function ResultsTabs({ result, meetingType = 0, token }) {
         })
     }, [transcriptSegments, transcriptQuery])
     const visibleSegments = filteredSegments.slice(0, visibleTranscriptCount)
-    const transcriptText = result.transcript.combined_text
-        || transcriptSegments.map(segment => `[${segment.speaker || 'ไม่ระบุ'}]: ${segment.text || ''}`).join('\n\n')
+    const summaryWarning = result.summary_metadata?.user_warning
+    const summaryStatus = result.summary_status || result.summary_metadata?.summary_status || 'completed'
+    const coveragePercentage = Number(
+        result.coverage_percentage ?? result.summary_metadata?.coverage_percentage ?? 100,
+    )
+    const hasSummary = Boolean((result.summary || '').trim()) && summaryStatus !== 'failed'
 
     return (
         <div>
@@ -135,7 +131,23 @@ function ResultsTabs({ result, meetingType = 0, token }) {
                 <span className="icon-label"><Icon name="clock" /> ประมวลผล {(result.processing_time?.total || 0).toFixed(1)} วินาที</span>
                 <span className="icon-label"><Icon name="file-audio" /> ความยาว {formatTime(result.audio_length_seconds)}</span>
                 <span className="icon-label"><Icon name="file-text" /> {transcriptSegments.length.toLocaleString()} segments</span>
+                <span className={`summary-status-badge summary-status-${summaryStatus}`}>
+                    {summaryStatus === 'partially_completed'
+                        ? `สรุปบางส่วน ${coveragePercentage.toFixed(1)}%`
+                        : summaryStatus === 'failed'
+                            ? 'สรุปไม่สำเร็จ'
+                            : 'สรุปครบ'}
+                </span>
             </div>
+
+            {summaryWarning && (
+                <div className={`results-status ${summaryStatus === 'failed' ? 'results-status-error' : 'results-status-warning'} summary-warning`} role="alert">
+                    <span className="icon-label">
+                        <Icon name="alert-circle" />
+                        {summaryWarning}
+                    </span>
+                </div>
+            )}
 
             {/* Tabs */}
             <div className="tabs">
@@ -222,7 +234,7 @@ function ResultsTabs({ result, meetingType = 0, token }) {
                 {/* Summary Tab */}
                 {activeTab === 'summary' && (
                     <div className="summary-content">
-                        {result.summary}
+                        {hasSummary ? result.summary : 'ไม่มี Summary ที่ใช้งานได้สำหรับงานนี้ กรุณาตรวจสอบ Transcript'}
                     </div>
                 )}
 
@@ -270,18 +282,6 @@ function ResultsTabs({ result, meetingType = 0, token }) {
             {/* Actions */}
             <div className="actions">
                 <button
-                    className="btn btn-secondary"
-                    onClick={() => handleCopyText(transcriptText, 'Transcript')}
-                >
-                    <span className="icon-label"><Icon name="clipboard-list" /> คัดลอก Transcript</span>
-                </button>
-                <button
-                    className="btn btn-secondary"
-                    onClick={() => handleCopyText(result.summary, 'Summary')}
-                >
-                    <span className="icon-label"><Icon name="clipboard-list" /> คัดลอก Summary</span>
-                </button>
-                <button
                     className="btn btn-primary"
                     onClick={handleDownloadTranscriptDocx}
                     disabled={downloading === 'transcript'}
@@ -294,7 +294,7 @@ function ResultsTabs({ result, meetingType = 0, token }) {
                 <button
                     className="btn btn-primary"
                     onClick={handleDownloadSummaryDocx}
-                    disabled={downloading === 'summary'}
+                    disabled={downloading === 'summary' || !hasSummary}
                 >
                     <span className="icon-label">
                         <Icon name={downloading === 'summary' ? 'refresh' : 'download'} className={downloading === 'summary' ? 'ui-icon-spin' : ''} />

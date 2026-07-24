@@ -5,15 +5,20 @@
 #   docker compose -f docker-compose.yml up -d
 
 services:
+  # The default development stack is intentionally plain HTTP on :9443.
+  # Run `--profile production-edge` only when testing Caddy locally.
+  caddy:
+    profiles: ["production-edge"]
+
   # Frontend: replace nginx build with Vite dev server
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile.dev
     # !override replaces (not merges) the base ports list so we don't keep
-    # the production 3000:80 mapping alongside the dev 5173:3000 one.
+    # any production edge mapping alongside the explicit HTTP dev port.
     ports: !override
-      - "5173:3000"
+      - "9443:3000"
     volumes:
       - ./frontend:/app
       - /app/node_modules
@@ -42,3 +47,15 @@ services:
     volumes:
       - ./backend:/app
       - whisperx_cache:/app/.cache
+
+  summary-worker:
+    volumes:
+      - ./backend:/app
+
+  maintenance-worker:
+    volumes:
+      - ./backend:/app
+
+  celery-beat:
+    volumes:
+      - ./backend:/app

@@ -11,13 +11,19 @@ router = APIRouter(prefix="/api/quota", tags=["quota"])
 def get_mongo_service(request: Request) -> MongoService:
     return request.app.state.mongo_service
 
-@router.get("")
+@router.get("", deprecated=True)
 async def get_quota(
     current_user: UserData = Depends(get_current_user),
     mongo_service: MongoService = Depends(get_mongo_service)
 ):
     """Retrieve user quota. Requires valid JWT token."""
     try:
+        mongo_service.log_activity(
+            str(current_user.id),
+            "deprecated_quota_endpoint",
+            resource_type="api",
+            resource_id="GET /api/quota",
+        )
         quota = mongo_service.get_quota_by_user_id(current_user.id)
 
         return {

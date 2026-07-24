@@ -18,7 +18,7 @@ from ..services.summarizer import (
     summarize_with_diarization,
 )
 from ..services.agenda_detector import detect_agendas
-from ..services.text_cleaner import clean_transcription
+from ..services.text_cleaner import clean_transcription, join_canonical_segments
 from ..utils.formatting import format_speaker, format_time
 from ..utils.audio_clip import extract_speaker_clips
 
@@ -52,6 +52,66 @@ class TranscribeSummaryPipeline:
         self.active_compute_type = self.config.COMPUTE_TYPE
         self.timing = {}
 
+    def _effective_config(self) -> Dict[str, Any]:
+        return {
+            "model": self.config.MODEL_NAME,
+            "device": self.config.DEVICE,
+            "compute_type": self.config.COMPUTE_TYPE,
+            "active_compute_type": self.active_compute_type,
+            "oom_fallback_compute_type": self.config.OOM_FALLBACK_COMPUTE_TYPE,
+            "batch_size": self.config.BATCH_SIZE,
+            "min_batch_size": self.config.MIN_BATCH_SIZE,
+            "language": self.config.LANGUAGE or "auto",
+            "beam_size": self.config.BEAM_SIZE,
+            "best_of": self.config.BEST_OF,
+            "patience": self.config.PATIENCE,
+            "vad_onset": self.config.VAD_ONSET,
+            "vad_offset": self.config.VAD_OFFSET,
+            "min_duration_on": self.config.MIN_DURATION_ON,
+            "min_duration_off": self.config.MIN_DURATION_OFF,
+            "enable_alignment": self.config.ENABLE_ALIGNMENT,
+            "enable_speaker_clips": self.config.ENABLE_SPEAKER_CLIPS,
+            "enable_voice_matching": self.config.ENABLE_VOICE_MATCHING,
+            "enable_speaker_name_detection": self.config.ENABLE_SPEAKER_NAME_DETECTION,
+            "enable_agenda_detection": self.config.ENABLE_AGENDA_DETECTION,
+            "diarization_min_speakers": self.config.MIN_SPEAKERS,
+            "diarization_max_speakers": self.config.MAX_SPEAKERS,
+        }
+
+    def _log_effective_config(self, context: str):
+        config = self._effective_config()
+        logger.info(
+            "WhisperX effective config (%s): model=%s device=%s compute_type=%s "
+            "active_compute_type=%s oom_fallback_compute_type=%s batch_size=%s "
+            "min_batch_size=%s language=%s beam_size=%s best_of=%s patience=%s "
+            "vad_onset=%.3f vad_offset=%.3f min_duration_on=%.3f "
+            "min_duration_off=%.3f alignment=%s speaker_clips=%s voice_matching=%s "
+            "speaker_name_detection=%s agenda_detection=%s min_speakers=%s max_speakers=%s",
+            context,
+            config["model"],
+            config["device"],
+            config["compute_type"],
+            config["active_compute_type"],
+            config["oom_fallback_compute_type"],
+            config["batch_size"],
+            config["min_batch_size"],
+            config["language"],
+            config["beam_size"],
+            config["best_of"],
+            config["patience"],
+            config["vad_onset"],
+            config["vad_offset"],
+            config["min_duration_on"],
+            config["min_duration_off"],
+            config["enable_alignment"],
+            config["enable_speaker_clips"],
+            config["enable_voice_matching"],
+            config["enable_speaker_name_detection"],
+            config["enable_agenda_detection"],
+            config["diarization_min_speakers"],
+            config["diarization_max_speakers"],
+        )
+
     def close(self):
         """Release model references and cached CUDA allocations."""
         model = self.model
@@ -63,6 +123,7 @@ class TranscribeSummaryPipeline:
     def _load_model(self):
         """Load WhisperX model with optimized settings"""
         logger.info("Loading WhisperX model...")
+        self._log_effective_config("model_load")
         start = time.time()
         clear_gpu_memory()
         
@@ -121,8 +182,10 @@ class TranscribeSummaryPipeline:
         
         self.timing['model_load'] = time.time() - start
         logger.info(
-            "Model loaded in %.2fs (compute_type=%s)",
+            "Model loaded in %.2fs (model=%s device=%s compute_type=%s)",
             self.timing['model_load'],
+            self.config.MODEL_NAME,
+            self.config.DEVICE,
             self.active_compute_type,
         )
 
@@ -195,6 +258,7 @@ class TranscribeSummaryPipeline:
         total_start = time.time()
 
         logger.info(f"TranscribeSummaryPipeline starting — audio: {audio_file}")
+        self._log_effective_config("job_start")
 
         # Step 1: Load model
         _report("model_load", 5)
@@ -212,7 +276,15 @@ class TranscribeSummaryPipeline:
         
         # Step 3: Transcribe
         _report("transcribing", 20)
-        logger.info("Transcribing...")
+        logger.info(
+            "Transcribing with WhisperX (model=%s, batch_size=%s, min_batch_size=%s, "
+            "language=%s, compute_type=%s)",
+            self.config.MODEL_NAME,
+            self.config.BATCH_SIZE,
+            self.config.MIN_BATCH_SIZE,
+            self.config.LANGUAGE or "auto",
+            self.active_compute_type,
+        )
         trans_start = time.time()
         result, effective_batch_size = self._transcribe_audio(audio)
         _check_cancelled()
@@ -226,20 +298,6 @@ class TranscribeSummaryPipeline:
             trans_time,
             effective_batch_size,
         )
-        
-        # Extract text for summary
-        combined_text = ' '.join(
-            seg.get('text', '').strip() 
-            for seg in result.get('segments', [])
-        )
-        
-        # Clean transcription text (remove noise, repetitions) — from V3
-        logger.info("Cleaning transcription text...")
-        clean_start = time.time()
-        combined_text = clean_transcription(combined_text)
-        clean_time = time.time() - clean_start
-        logger.info(f"Text cleaning completed in {clean_time:.2f}s")
-        _check_cancelled()
         
         # Clear transcription model to free VRAM
         self.close()
@@ -345,6 +403,8 @@ class TranscribeSummaryPipeline:
         speakers_words = {}
         transcript_lines = []
         
+        logger.info("Cleaning canonical transcript segments...")
+        clean_start = time.time()
         for segment in segments:
             speaker = format_speaker(segment.get('speaker'))
             # Keep generic labels (คนพูด 1, คนพูด 2, ...)
@@ -361,11 +421,15 @@ class TranscribeSummaryPipeline:
             speakers_words[speaker] = speakers_words.get(speaker, 0) + word_count
             # Build transcript with speaker labels
             transcript_lines.append(f"[{speaker}]: {text}")
-        
+
+        # All downstream views are derived from the same, once-cleaned segment
+        # list.  Re-cleaning the combined/speaker form can otherwise collapse
+        # line boundaries or apply transformations a second time.
+        combined_text = join_canonical_segments(segments)
         transcript_with_speakers = "\n".join(transcript_lines)
-        
-        # Clean speaker transcript as well
-        transcript_with_speakers = clean_transcription(transcript_with_speakers)
+        clean_time = time.time() - clean_start
+        logger.info("Canonical transcript cleaning completed in %.2fs", clean_time)
+        _check_cancelled()
         speaker_summary = {
             'speaking_time': speakers_time,
             'word_count': speakers_words,
@@ -623,6 +687,7 @@ class TranscribeSummaryPipeline:
             'clip_dir': clip_dir,
             'suggested_names': suggested_names,
             'detected_language': detected_language,
+            'whisperx_config': self._effective_config(),
             'effective_meeting_type_id': effective_meeting_type_id,
             'meeting_style_source': meeting_style_source,
             'meeting_style_classification': meeting_style_classification,

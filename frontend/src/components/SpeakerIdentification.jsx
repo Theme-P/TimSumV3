@@ -21,7 +21,10 @@ function SpeakerIdentification({ result, sessionId, token, onMappingChange, isCo
         }, {})
     )
     const [playingSpeaker, setPlayingSpeaker] = useState(null)
+    const [unavailableClips, setUnavailableClips] = useState({})
+    const [playbackError, setPlaybackError] = useState('')
     const audioRef = useRef(null)
+    const playbackRequestRef = useRef(null)
 
     const totalSpeakingTime = Object.values(speakerStats.speaking_time).reduce((a, b) => a + b, 0)
     const detectedCount = Object.keys(suggestedNames).length
@@ -37,10 +40,11 @@ function SpeakerIdentification({ result, sessionId, token, onMappingChange, isCo
             }
         }
         onMappingChange(mapping)
-    }, [speakerNames])
+    }, [speakerNames, onMappingChange])
 
     useEffect(() => {
         return () => {
+            playbackRequestRef.current?.abort()
             if (audioRef.current) {
                 audioRef.current.pause()
                 if (audioRef.current.objectUrl) {
@@ -70,50 +74,67 @@ function SpeakerIdentification({ result, sessionId, token, onMappingChange, isCo
         }
     }
 
+    const stopCurrentAudio = () => {
+        playbackRequestRef.current?.abort()
+        playbackRequestRef.current = null
+        if (audioRef.current) {
+            audioRef.current.pause()
+            audioRef.current.currentTime = 0
+        }
+        revokeCurrentAudioUrl()
+        audioRef.current = null
+        setPlayingSpeaker(null)
+    }
+
     const handlePlayClip = async (speaker) => {
         const clip = speakerClips[speaker]
-        if (!clip || !sessionId || !token) return
+        if (!clip || !sessionId || !token || unavailableClips[speaker]) return
 
         const clipUrl = `${API_BASE}/speaker-clip/${sessionId}/${clip.clip_filename}`
 
         if (playingSpeaker === speaker && audioRef.current) {
-            audioRef.current.pause()
-            audioRef.current.currentTime = 0
-            revokeCurrentAudioUrl()
-            setPlayingSpeaker(null)
+            stopCurrentAudio()
             return
         }
 
-        if (audioRef.current) {
-            audioRef.current.pause()
-            revokeCurrentAudioUrl()
-        }
+        stopCurrentAudio()
+        setPlaybackError('')
+        const controller = new AbortController()
+        playbackRequestRef.current = controller
 
         try {
             const res = await fetch(clipUrl, {
                 headers: { 'Authorization': `Bearer ${token}` },
+                signal: controller.signal,
             })
-            if (!res.ok) throw new Error('Failed to load speaker clip')
+            if (res.status === 404 || res.status === 410) {
+                setUnavailableClips((current) => ({ ...current, [speaker]: true }))
+                throw new Error('คลิปเสียงหมดอายุแล้วตามนโยบายการเก็บรักษา')
+            }
+            if (!res.ok) throw new Error('ไม่สามารถโหลดคลิปเสียงได้')
 
             const objectUrl = URL.createObjectURL(await res.blob())
+            if (controller.signal.aborted) {
+                URL.revokeObjectURL(objectUrl)
+                return
+            }
             const audio = new Audio(objectUrl)
             audio.objectUrl = objectUrl
             audioRef.current = audio
             setPlayingSpeaker(speaker)
 
-            audio.play().catch(err => {
-                console.error('Audio play error:', err)
-                revokeCurrentAudioUrl()
-                setPlayingSpeaker(null)
-            })
-
             audio.onended = () => {
-                revokeCurrentAudioUrl()
-                setPlayingSpeaker(null)
+                stopCurrentAudio()
             }
+            await audio.play()
         } catch (err) {
-            console.error('Audio play error:', err)
-            setPlayingSpeaker(null)
+            if (err.name === 'AbortError') return
+            stopCurrentAudio()
+            setPlaybackError(err.message || 'ไม่สามารถเล่นคลิปเสียงได้')
+        } finally {
+            if (playbackRequestRef.current === controller) {
+                playbackRequestRef.current = null
+            }
         }
     }
 
@@ -154,6 +175,9 @@ function SpeakerIdentification({ result, sessionId, token, onMappingChange, isCo
                             : <>พบผู้พูด <strong>{speakers.length}</strong> คน — ฟังเสียงตัวอย่างแล้วกรอกชื่อ</>
                         }
                     </p>
+                    {playbackError && (
+                        <p className="speaker-clip-error" role="alert">{playbackError}</p>
+                    )}
 
                     <div className="speaker-id-list">
                         {speakers.map((speaker, index) => {
@@ -163,6 +187,7 @@ function SpeakerIdentification({ result, sessionId, token, onMappingChange, isCo
                             const clip = speakerClips[speaker]
                             const isPlaying = playingSpeaker === speaker
                             const hasSuggestion = !!suggestedNames[speaker]
+                            const clipUnavailable = !!unavailableClips[speaker]
 
                             return (
                                 <div key={speaker} className={`speaker-id-card ${hasSuggestion ? 'auto-detected' : ''}`}>
@@ -183,17 +208,26 @@ function SpeakerIdentification({ result, sessionId, token, onMappingChange, isCo
                                             <button
                                                 className={`btn-play-clip ${isPlaying ? 'playing' : ''}`}
                                                 onClick={(e) => { e.stopPropagation(); handlePlayClip(speaker) }}
-                                                title={isPlaying ? 'หยุดเล่น' : 'เล่นตัวอย่างเสียง'}
+                                                title={clipUnavailable ? 'คลิปเสียงหมดอายุแล้ว' : (isPlaying ? 'หยุดเล่น' : 'เล่นตัวอย่างเสียง')}
+                                                disabled={clipUnavailable}
                                             >
-                                                <span className="icon-label"><Icon name={isPlaying ? 'square' : 'play'} /> {isPlaying ? 'หยุด' : 'ฟังเสียง'}</span>
+                                                <span className="icon-label">
+                                                    <Icon name={isPlaying ? 'square' : 'play'} />
+                                                    {clipUnavailable ? 'หมดอายุ' : (isPlaying ? 'หยุด' : 'ฟังเสียง')}
+                                                </span>
                                             </button>
                                         )}
                                     </div>
 
-                                    {clip && (
+                                    {clip && !clipUnavailable && (
                                         <div className="speaker-id-clip-info">
-                                            <Icon name="volume" /> ตัวอย่างเสียง {clip.duration.toFixed(1)} วินาที
+                                            <Icon name="volume" /> ตัวอย่างเสียง {Number(clip.duration || 0).toFixed(1)} วินาที
                                             ({formatTime(clip.start)} - {formatTime(clip.end)})
+                                        </div>
+                                    )}
+                                    {clipUnavailable && (
+                                        <div className="speaker-id-clip-info speaker-id-clip-expired">
+                                            คลิปเสียงหมดอายุแล้ว แต่ Transcript และสรุปยังใช้งานได้ตามปกติ
                                         </div>
                                     )}
 

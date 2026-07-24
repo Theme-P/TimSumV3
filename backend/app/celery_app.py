@@ -5,8 +5,12 @@ Uses Redis as broker and result backend.
 import os
 from celery import Celery
 from dotenv import load_dotenv
+from app.core.runtime_validation import validate_runtime_configuration
 
 load_dotenv()
+# Workers and beat are independent processes; they must fail closed under the
+# same production invariants as the FastAPI startup path.
+validate_runtime_configuration()
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 WORKER_CONCURRENCY = int(os.getenv("CELERY_WORKER_CONCURRENCY", "1"))
@@ -17,7 +21,7 @@ celery_app = Celery(
     "timsumv3",
     broker=REDIS_URL,
     backend=REDIS_URL,
-    include=["app.tasks.transcription", "app.tasks.summary"],
+    include=["app.tasks.transcription", "app.tasks.summary", "app.tasks.maintenance"],
 )
 
 celery_app.conf.update(
@@ -40,6 +44,7 @@ celery_app.conf.update(
         "transcription.process_audio": {"queue": "transcription"},
         "summary.process_next_chunk": {"queue": "summary"},
         "summary.finalize": {"queue": "summary"},
+        "maintenance.*": {"queue": "maintenance"},
     },
 
     # Result expiry
@@ -47,6 +52,13 @@ celery_app.conf.update(
 
     # Timezone
     timezone="Asia/Bangkok",
+    beat_schedule={
+        "reconcile-durable-workflows": {
+            "task": "maintenance.reconcile",
+            "schedule": 60.0,
+            "options": {"queue": "maintenance"},
+        },
+    },
 )
 
 if WORKER_MAX_TASKS_PER_CHILD > 0:

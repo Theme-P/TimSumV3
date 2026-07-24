@@ -4,10 +4,11 @@ import { Link } from 'react-router-dom';
 import Icon from '../components/ui/Icon';
 
 const API_BASE = '/api';
+const TEMPLATE_TEST_MAX_TOKENS = 800;
 
 const DEFAULT_LLM_FORM = {
     primary_model: 'ict-ollama/gemma4:31b-it-q4_K_M',
-    fallback_models: 'ict-ollama/qwen2.5:72b-instruct-q4_K_M',
+    fallback_models: 'ict-ollama/qwen2.5:72b-instruct-q4_K_M\nict-ollama/glm4.7flashq4:latest',
     temperature: 0.3,
     max_tokens: 4000,
 };
@@ -37,6 +38,10 @@ function parseFallbackModels(value) {
         .split('\n')
         .map(item => item.trim())
         .filter(Boolean);
+}
+
+function normalizeTemplateTestMaxTokens(value) {
+    return Math.max(100, Math.min(normalizeNumber(value, TEMPLATE_TEST_MAX_TOKENS), TEMPLATE_TEST_MAX_TOKENS));
 }
 
 function AdminLLMSettings() {
@@ -222,7 +227,10 @@ function AdminLLMSettings() {
     };
 
     const handleSaveTemplate = async () => {
-        if (!selectedTemplateId) return;
+        if (selectedTemplateId === null || selectedTemplateId === undefined) {
+            setFeedback({ type: 'error', text: 'กรุณาเลือกประเภทการประชุมก่อนบันทึก' });
+            return;
+        }
 
         setTemplateSaving(true);
         setFeedback(null);
@@ -264,11 +272,14 @@ function AdminLLMSettings() {
                     system_prompt: templateForm.system_prompt,
                     user_prompt: templateTestPrompt,
                     temperature: normalizeNumber(templateForm.temperature, 0.4),
-                    max_tokens: normalizeNumber(templateForm.max_tokens, 4000),
+                    max_tokens: normalizeTemplateTestMaxTokens(templateForm.max_tokens),
                 }),
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || 'การทดสอบล้มเหลว');
+            if (!data.result || !data.result.trim()) {
+                throw new Error('LLM ไม่ได้ส่งผลลัพธ์กลับมา กรุณาตรวจสอบ Runtime Models หรือ API key');
+            }
             setTemplateTestResult(data.result);
         } catch (err) {
             setTemplateTestResult(`Error: ${err.message}`);

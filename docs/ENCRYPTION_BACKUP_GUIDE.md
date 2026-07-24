@@ -12,7 +12,7 @@ daily backup เวลา 02:00 น. และการทดสอบ restore
 - ไม่ใส่ email/username ใน JWT ใหม่
 - เก็บ password-reset token เป็น SHA-256 hash แทน plaintext
 - แยก backup container ออกจาก GPU worker
-- `mongodump --archive --gzip` → เข้ารหัสด้วย `age` → upload ไป MinIO
+- `mongodump --archive --gzip` → เข้ารหัสด้วย `age` → upload ไป off-host S3/MinIO
 - เปิด MinIO versioning, GOVERNANCE retention และ lifecycle ตามจำนวนวันที่กำหนด
 - ดาวน์โหลดไฟล์ backup กลับมาตรวจ SHA-256 ทุกครั้งก่อนรายงานว่าสำเร็จ
 
@@ -29,7 +29,7 @@ daily backup เวลา 02:00 น. และการทดสอบ restore
    chmod 600 .env
    ```
 
-3. เปลี่ยนค่า default ของ admin/superadmin และ rotate secret ที่เคยเปิดเผย
+3. Rotate JWT/Mongo/Redis/MinIO secret ที่เคยเปิดเผย และใช้ one-time CLI สร้างผู้ดูแล
 4. ห้ามเก็บ PII key หรือ `age` private identity ใน Git
 5. ต้องทำและทดสอบ backup ก่อนรัน PII migration
 
@@ -52,12 +52,14 @@ age-keygen -y backup-identity.txt
 
 ```env
 BACKUP_AGE_RECIPIENT=age1...
+BACKUP_S3_ENDPOINT=https://backup-storage.example.org
 BACKUP_BUCKET=db-backups
 BACKUP_RETENTION_DAYS=30
 BACKUP_SCHEDULE_HOUR=2
 BACKUP_SCHEDULE_MINUTE=0
-BACKUP_RUN_ON_STARTUP=false
+BACKUP_RUN_ON_STARTUP=true
 BACKUP_CONFIGURE_BUCKET=true
+BACKUP_MAX_AGE_HOURS=26
 ```
 
 เก็บ `backup-identity.txt` แบบ offline อย่างน้อยสองชุดในสถานที่แยกกัน
@@ -96,7 +98,9 @@ docker compose --profile backup build backup
 docker compose --profile backup run --rm -e BACKUP_ONCE=true backup
 ```
 
-ต้องเห็นข้อความ `Backup completed and verified` จึงถือว่าสำเร็จ ครั้งแรก service
+ปลายทางต้องอยู่นอกเครื่องและนอก volume ของ TimSumV3; production script จะปฏิเสธ
+localhost และ object store `minio:9000` ของแอป ต้องเห็นข้อความ
+`Backup completed and verified` จึงถือว่าสำเร็จ ครั้งแรก service
 จะสร้าง bucket `db-backups`, เปิด versioning, ตั้ง WORM GOVERNANCE retention และ
 lifecycle cleanup ให้อัตโนมัติ
 
@@ -107,16 +111,16 @@ docker compose --profile backup up -d backup
 docker compose --profile backup logs -f backup
 ```
 
-ตรวจรายการไฟล์ผ่าน MinIO console หรือ `mc ls --recursive` ไฟล์จะอยู่ใต้:
+ตรวจรายการไฟล์ผ่าน console ของ off-host storage หรือ `mc ls --recursive` ไฟล์จะอยู่ใต้:
 
 ```text
 db-backups/daily/YYYY/MM/timsumv3_YYYYMMDDTHHMMSS+0700.archive.gz.age
 ```
 
-### 1.4 MinIO service account สำหรับ production
+### 1.4 Limited object-store service account สำหรับ production
 
-ค่าเริ่มต้นใช้ MinIO admin credential เพื่อ provision bucket ได้ หลัง provision
-สำเร็จควรสร้าง service account ที่เข้าถึงเฉพาะ `db-backups` แล้วตั้ง:
+Provision bucket/retention ด้วยผู้ดูแลปลายทางก่อน จากนั้นสร้าง service account ที่
+เข้าถึงเฉพาะ `db-backups` แล้วตั้ง:
 
 ```env
 BACKUP_MINIO_ACCESS_KEY=<limited-access-key>
@@ -124,6 +128,7 @@ BACKUP_MINIO_SECRET_KEY=<limited-secret-key>
 BACKUP_CONFIGURE_BUCKET=false
 ```
 
+Production บังคับ dedicated credential นี้และไม่ fallback ไปใช้ MinIO root credential
 สิทธิ์ขั้นต่ำหลัง provision คือ list bucket, put/get/stat object และอ่าน checksum
 ส่วน lifecycle/retention ให้ผู้ดูแล MinIO เป็นผู้จัดการ
 
@@ -155,8 +160,7 @@ dual blind index แยกต่างหาก
 ### 2.2 Deploy โค้ดแบบอ่านข้อมูลเก่าได้
 
 ```bash
-docker compose build backend worker
-docker compose up -d backend worker
+./deploy.sh
 ```
 
 หากพบ `ModuleNotFoundError: No module named 'cryptography'` แปลว่า container
@@ -272,7 +276,7 @@ age --decrypt -i backup-identity.txt \
 ### 4.2 Restore ลง temporary MongoDB ก่อนเสมอ
 
 ```bash
-docker run -d --name timsum-restore-check mongo:8.0
+docker run -d --name timsum-restore-check <MONGO_TOOLS_IMAGE ที่ pin digest แล้ว>
 docker cp timsumv3_restore.archive.gz timsum-restore-check:/tmp/restore.archive.gz
 docker exec timsum-restore-check mongorestore \
   --archive=/tmp/restore.archive.gz --gzip --drop
@@ -292,6 +296,7 @@ docker rm timsum-restore-check
 ตรวจทุกวัน:
 
 - backup container ยัง healthy
+- persisted `last_attempt_at` ไม่ fail และ `last_success_at` ไม่เก่ากว่า 26 ชั่วโมง
 - log มี `Backup completed and verified`
 - มีไฟล์ใหม่ใน `db-backups/daily/...`
 - ขนาด backup ไม่ลดผิดปกติ
@@ -308,8 +313,8 @@ docker rm timsum-restore-check
 - MongoDB ปัจจุบันเป็น standalone ดังนั้น dump ระหว่างมี write ไม่รับประกัน snapshot
   consistency ข้าม collection ควรรันช่วง traffic ต่ำ หรือเปลี่ยนเป็น replica set แล้วตั้ง
   `MONGO_BACKUP_USE_OPLOG=true`
-- `mongo_data` และ `minio_data` ยังอยู่บน host เดียวกัน ต้อง replicate bucket ไปอีก
-  เครื่องหรือ cloud object storage เพื่อป้องกันเครื่อง/ดิสก์สูญหาย
+- Production backup ต้องชี้ `BACKUP_S3_ENDPOINT` ไป off-host storage; local MinIO ใช้
+  เป็น application storage เท่านั้นและไม่นับเป็น backup
 - การทำ MinIO backup ไม่รวมอยู่ใน database dump หากต้องเก็บ voice samples และ speaker
   clips ต้องเปิด MinIO bucket replication เพิ่ม
 - การสูญเสีย PII encryption key หรือ age private identity จะทำให้ข้อมูลกู้คืนไม่ได้

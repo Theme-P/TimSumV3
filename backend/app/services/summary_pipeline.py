@@ -16,6 +16,26 @@ logger = logging.getLogger(__name__)
 LLMCall = Callable[..., str]
 
 
+def _llm_response_parts(value: Any) -> tuple[str, dict]:
+    """Normalize plain-text and diagnostic model responses."""
+    if isinstance(value, str):
+        return value, {}
+    if isinstance(value, dict):
+        content = str(value.get("content") or "")
+        return content, {
+            key: value.get(key)
+            for key in ("timed_out", "error_kind", "model", "attempts")
+            if value.get(key) is not None
+        }
+    content = str(getattr(value, "content", "") or "")
+    diagnostics = {
+        key: getattr(value, key)
+        for key in ("timed_out", "error_kind", "model", "attempts")
+        if getattr(value, key, None) is not None
+    }
+    return content, diagnostics
+
+
 # Product fast-summary profile. Token/chunk sizes are env-tunable so production
 # can adjust Gemma budgets without changing code.
 def _env_bool(name: str, default: bool) -> bool:
@@ -271,6 +291,33 @@ def chunk_segments(
     return chunks
 
 
+def unresolved_chunk_numbers(
+    chunks: list[dict],
+    chunk_numbers: list[int],
+    covered_ids: set[int],
+) -> list[int]:
+    """Return only chunk flags whose source segments remain uncovered."""
+    candidates = {int(number) for number in chunk_numbers or []}
+    if not candidates:
+        return []
+
+    covered = {int(segment_id) for segment_id in covered_ids}
+    known: set[int] = set()
+    unresolved: set[int] = set()
+    for chunk in chunks:
+        chunk_number = int(chunk["chunk_number"])
+        if chunk_number not in candidates:
+            continue
+        known.add(chunk_number)
+        segment_ids = {int(segment_id) for segment_id in chunk.get("segment_ids") or []}
+        if not segment_ids or not segment_ids.issubset(covered):
+            unresolved.add(chunk_number)
+
+    # Unknown chunk numbers are kept unresolved rather than silently discarded.
+    unresolved.update(candidates - known)
+    return sorted(unresolved)
+
+
 def _extract_json_object(content: str) -> Optional[dict]:
     if not content:
         return None
@@ -451,6 +498,7 @@ def extract_chunk_record(
     custom_prompt: str = "",
     template_prompt: str = "",
     primary_only: bool = False,
+    request_meta: Optional[dict] = None,
 ) -> dict:
     chunk_label = chunk.get("_chunk_label", chunk["chunk_number"])
     root_chunk_number = int(chunk.get("_root_chunk_number", chunk["chunk_number"]))
@@ -465,14 +513,21 @@ Transcript ปัจจุบัน:
 {chunk['text']}
 
 สกัดข้อมูลให้ครบและตอบ JSON เท่านั้น"""
-    content = llm_call(
+    response = llm_call(
         _chunk_system_prompt(scope_label, template_prompt, custom_prompt),
         user_prompt,
         temperature=0.1,
         max_tokens=CHUNK_OUTPUT_TOKENS,
         timeout=summary_llm_timeout(),
         primary_only=primary_only,
+        request_meta=request_meta or {
+            "request_type": "root",
+            "chunk_label": str(chunk_label),
+            "start_segment_idx": chunk["start_segment_idx"],
+            "end_segment_idx": chunk["end_segment_idx"],
+        },
     )
+    content, llm_outcome = _llm_response_parts(response)
     parsed = _extract_json_object(content)
     partial_summary = _partial_summary_from_content(content) if content and not parsed else ""
     record = normalize_record(parsed, fallback_summary=partial_summary)
@@ -493,6 +548,8 @@ Transcript ปัจจุบัน:
     record["source_chunks"] = [root_chunk_number]
     record["failed_chunks"] = [] if has_structured_content else [root_chunk_number]
     record["partial_chunks"] = [root_chunk_number] if has_partial_content else []
+    if llm_outcome:
+        record["_llm_outcome"] = llm_outcome
     return record
 
 
@@ -683,14 +740,16 @@ def _merge_record_group(records: list[dict], llm_call: LLMCall, scope_label: str
         deterministic["reduce_skipped_for_speed"] = True
         return deterministic
 
-    content = llm_call(
+    response = llm_call(
         _reduce_system_prompt(scope_label),
         "รวมข้อมูลต่อไปนี้โดยไม่ทำข้อเท็จจริงสูญหาย:\n" + json.dumps(payload, ensure_ascii=False),
         temperature=0.1,
         max_tokens=REDUCE_OUTPUT_TOKENS,
         timeout=summary_llm_timeout(),
         primary_only=SUMMARY_FAST_DEGRADE_ON_TIMEOUT,
+        request_meta={"request_type": "reduce", "record_count": len(records)},
     )
+    content, _ = _llm_response_parts(response)
     parsed = _extract_json_object(content)
     if not parsed:
         logger.warning("Structured reduce failed; retaining deterministic merge")
@@ -807,16 +866,21 @@ def render_record(
     custom_prompt: str,
     scope_label: str,
     input_tokens: int,
-) -> tuple[str, int, bool]:
+    *,
+    return_diagnostics: bool = False,
+    include_warning: bool = True,
+) -> tuple[str, int, bool] | tuple[str, int, bool, dict]:
     max_tokens = adaptive_final_max_tokens(input_tokens)
-    content = llm_call(
+    response = llm_call(
         _render_system_prompt(meeting_type_id, template_prompt, custom_prompt, scope_label),
         "จัดทำรายงานจาก Meeting Memory ต่อไปนี้:\n" + json.dumps(record, ensure_ascii=False),
         temperature=0.2,
         max_tokens=max_tokens,
         timeout=summary_llm_timeout(),
         primary_only=SUMMARY_FAST_DEGRADE_ON_TIMEOUT,
+        request_meta={"request_type": "final_render"},
     )
+    content, llm_outcome = _llm_response_parts(response)
     render_degraded = False
     if content:
         result = content.strip()
@@ -824,13 +888,16 @@ def render_record(
         result = record_to_text(record, heading=f"สรุป{scope_label}")
         render_degraded = True
     failed_chunks = sorted(set(record.get("failed_chunks", [])))
-    if failed_chunks or render_degraded or record.get("reduce_degraded"):
+    if include_warning and (failed_chunks or render_degraded or record.get("reduce_degraded")):
         failed_text = ", ".join(str(number) for number in failed_chunks)
         warning = SUMMARY_GEMMA_PARTIAL_WARNING
         if failed_text:
             warning = f"{SUMMARY_GEMMA_PARTIAL_WARNING} (ส่วนที่ต้องตรวจสอบเพิ่มเติม: {failed_text})"
         result = append_user_warning(result, warning)
-    return result.strip(), max_tokens, render_degraded
+    rendered = (result.strip(), max_tokens, render_degraded)
+    if return_diagnostics:
+        return (*rendered, llm_outcome)
+    return rendered
 
 
 def _item_text(item: Any, preferred_keys: tuple[str, ...] = ("text",)) -> str:

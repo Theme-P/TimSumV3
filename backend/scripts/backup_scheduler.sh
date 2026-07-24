@@ -5,6 +5,10 @@ log() {
   printf '%s %s\n' "$(date --iso-8601=seconds)" "$*"
 }
 
+state_dir="${BACKUP_STATE_DIR:-/var/lib/timsum-backup}"
+mkdir -p "$state_dir"
+printf '%s\n' "$(date +%s)" > "$state_dir/scheduler_started_at"
+
 run_backup() {
   if /usr/local/bin/backup-mongodb; then
     return 0
@@ -27,8 +31,6 @@ schedule_minute="${BACKUP_SCHEDULE_MINUTE:-0}"
   log "BACKUP_SCHEDULE_MINUTE must be 0-59" >&2
   exit 2
 }
-
-touch /tmp/backup-scheduler-ready
 
 if [[ "${BACKUP_RUN_ON_STARTUP:-false}" == "true" ]]; then
   run_backup || true

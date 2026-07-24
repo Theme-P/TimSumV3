@@ -1,105 +1,201 @@
-import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
-const AuthContext = createContext(null);
-const API_BASE = '/api';
+const AuthContext = createContext(null)
+const API_BASE = '/api'
 
-function isTokenExpired(token) {
+function decodeToken(token) {
     try {
-        const payload = JSON.parse(atob(token.split('.')[1]));
-        return payload.exp * 1000 < Date.now() + 5 * 60 * 1000;
+        return JSON.parse(atob(token.split('.')[1]))
     } catch {
-        return true;
+        return null
     }
 }
 
+function isTokenExpired(token) {
+    const payload = decodeToken(token)
+    return !payload?.exp || payload.exp * 1000 < Date.now() + 5 * 60 * 1000
+}
+
+async function readJson(response) {
+    return response.json().catch(() => ({}))
+}
+
 export const AuthProvider = ({ children }) => {
-    const [token, setToken] = useState(null);
-    const [isLoading, setIsLoading] = useState(true);
-    const [consentChecked, setConsentChecked] = useState(false);
-    const [needsConsent, setNeedsConsent] = useState(false);
+    const [token, setToken] = useState(null)
+    const [isLoading, setIsLoading] = useState(true)
+    const [user, setUser] = useState(null)
+    const [profileChecked, setProfileChecked] = useState(false)
+    const [consentChecked, setConsentChecked] = useState(false)
+    const [needsConsent, setNeedsConsent] = useState(false)
+    const [authCheckError, setAuthCheckError] = useState(null)
+    const [authCheckAttempt, setAuthCheckAttempt] = useState(0)
 
     const logout = useCallback(() => {
-        setToken(null);
-        setConsentChecked(false);
-        setNeedsConsent(false);
-        localStorage.removeItem('timsum_token');
-    }, []);
+        setToken(null)
+        setUser(null)
+        setProfileChecked(false)
+        setConsentChecked(false)
+        setNeedsConsent(false)
+        setAuthCheckError(null)
+        localStorage.removeItem('timsum_token')
+    }, [])
 
     useEffect(() => {
-        const savedToken = localStorage.getItem('timsum_token');
+        const savedToken = localStorage.getItem('timsum_token')
         if (savedToken && !isTokenExpired(savedToken)) {
-            setToken(savedToken);
+            setToken(savedToken)
         } else if (savedToken) {
-            localStorage.removeItem('timsum_token');
+            localStorage.removeItem('timsum_token')
         }
-        setIsLoading(false);
-    }, []);
+        setIsLoading(false)
+    }, [])
 
-    // Auto-logout when token expires
     useEffect(() => {
-        if (!token) return;
-        try {
-            const payload = JSON.parse(atob(token.split('.')[1]));
-            const expiresIn = payload.exp * 1000 - Date.now();
-            if (expiresIn <= 0) { logout(); return; }
-            const timer = setTimeout(logout, expiresIn);
-            return () => clearTimeout(timer);
-        } catch {
-            logout();
+        if (!token) return undefined
+        const payload = decodeToken(token)
+        const expiresIn = (payload?.exp || 0) * 1000 - Date.now()
+        if (expiresIn <= 0) {
+            logout()
+            return undefined
         }
-    }, [token, logout]);
+        const timer = setTimeout(logout, expiresIn)
+        return () => clearTimeout(timer)
+    }, [token, logout])
 
-    // Check consent status whenever token changes
     useEffect(() => {
-        if (!token) { setConsentChecked(false); setNeedsConsent(false); return; }
-        fetch(`${API_BASE}/consent`, {
+        if (!token) {
+            setUser(null)
+            setProfileChecked(false)
+            setConsentChecked(false)
+            setNeedsConsent(false)
+            setAuthCheckError(null)
+            return undefined
+        }
+
+        const controller = new AbortController()
+        setProfileChecked(false)
+        setConsentChecked(false)
+        setAuthCheckError(null)
+
+        const loadSecurityContext = async () => {
+            try {
+                const headers = { Authorization: `Bearer ${token}` }
+                const [profileResponse, consentResponse] = await Promise.all([
+                    fetch(`${API_BASE}/user/profile`, { headers, signal: controller.signal }),
+                    fetch(`${API_BASE}/consent`, { headers, signal: controller.signal }),
+                ])
+
+                if (profileResponse.status === 401 || consentResponse.status === 401) {
+                    logout()
+                    return
+                }
+
+                if (!profileResponse.ok || !consentResponse.ok) {
+                    throw new Error('ไม่สามารถตรวจสอบโปรไฟล์และความยินยอมได้')
+                }
+
+                const [profileData, consentData] = await Promise.all([
+                    readJson(profileResponse),
+                    readJson(consentResponse),
+                ])
+
+                if (!profileData?.id || !profileData?.role) {
+                    throw new Error('ข้อมูลโปรไฟล์จากเซิร์ฟเวอร์ไม่สมบูรณ์')
+                }
+
+                setUser(profileData)
+                setNeedsConsent(!consentData.all_required_consented)
+                setProfileChecked(true)
+                setConsentChecked(true)
+            } catch (error) {
+                if (error.name === 'AbortError') return
+                setUser(null)
+                setProfileChecked(false)
+                setConsentChecked(false)
+                setNeedsConsent(false)
+                setAuthCheckError(error.message || 'ไม่สามารถตรวจสอบสิทธิ์การใช้งานได้')
+            }
+        }
+
+        loadSecurityContext()
+        return () => controller.abort()
+    }, [token, authCheckAttempt, logout])
+
+    const login = useCallback((newToken) => {
+        setUser(null)
+        setProfileChecked(false)
+        setConsentChecked(false)
+        setNeedsConsent(false)
+        setAuthCheckError(null)
+        setToken(newToken)
+        localStorage.setItem('timsum_token', newToken)
+    }, [])
+
+    const retryAuthChecks = useCallback(() => {
+        setAuthCheckError(null)
+        setAuthCheckAttempt((attempt) => attempt + 1)
+    }, [])
+
+    const refreshProfile = useCallback(async () => {
+        if (!token) return null
+
+        const response = await fetch(`${API_BASE}/user/profile`, {
             headers: { Authorization: `Bearer ${token}` },
         })
-            .then(r => r.json())
-            .then(data => {
-                setNeedsConsent(!data.all_required_consented);
-                setConsentChecked(true);
-            })
-            .catch(() => {
-                // If consent check fails, don't block the user
-                setNeedsConsent(false);
-                setConsentChecked(true);
-            });
-    }, [token]);
-
-    const login = (newToken) => {
-        setToken(newToken);
-        setConsentChecked(false);
-        localStorage.setItem('timsum_token', newToken);
-    };
-
-    const markConsented = () => setNeedsConsent(false);
-
-    let userRole = 'user';
-    if (token) {
-        try {
-            const payload = JSON.parse(atob(token.split('.')[1]));
-            userRole = payload.role || 'user';
-        } catch (err) {
-            console.warn('Unable to read user role from token', err);
+        if (response.status === 401) {
+            logout()
+            return null
         }
-    }
+        if (!response.ok) {
+            throw new Error('ไม่สามารถโหลดข้อมูลโปรไฟล์ล่าสุดได้')
+        }
 
-    return (
-        <AuthContext.Provider value={{
-            token,
-            isAuthenticated: !!token,
-            userRole,
-            login,
-            logout,
-            isLoading,
-            needsConsent,
-            consentChecked,
-            markConsented,
-        }}>
-            {children}
-        </AuthContext.Provider>
-    );
-};
+        const profileData = await readJson(response)
+        if (!profileData?.id || !profileData?.role) {
+            throw new Error('ข้อมูลโปรไฟล์จากเซิร์ฟเวอร์ไม่สมบูรณ์')
+        }
+        setUser(profileData)
+        setProfileChecked(true)
+        return profileData
+    }, [token, logout])
 
-export const useAuth = () => useContext(AuthContext);
+    const markConsented = useCallback(() => {
+        setNeedsConsent(false)
+        setConsentChecked(true)
+        setAuthCheckError(null)
+    }, [])
+
+    const value = useMemo(() => ({
+        token,
+        user,
+        isAuthenticated: !!token,
+        userRole: user?.role || 'user',
+        login,
+        logout,
+        isLoading,
+        profileChecked,
+        consentChecked,
+        needsConsent,
+        authCheckError,
+        retryAuthChecks,
+        refreshProfile,
+        markConsented,
+    }), [
+        token,
+        user,
+        login,
+        logout,
+        isLoading,
+        profileChecked,
+        consentChecked,
+        needsConsent,
+        authCheckError,
+        retryAuthChecks,
+        refreshProfile,
+        markConsented,
+    ])
+
+    return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+}
+
+export const useAuth = () => useContext(AuthContext)

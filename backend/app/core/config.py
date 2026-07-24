@@ -15,6 +15,28 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
         return default
 
 
+def _env_optional_int(name: str, default=None, minimum: int = 1):
+    value = os.environ.get(name)
+    if value is None or value.strip() == "":
+        return default
+    try:
+        return max(minimum, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float, minimum=None, maximum=None) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
 class PipelineConfig:
     """Configuration for the transcription-summary pipeline"""
     
@@ -23,7 +45,7 @@ class PipelineConfig:
     COMPUTE_TYPE = os.environ.get("WHISPERX_COMPUTE_TYPE", "float16")
     
     # WhisperX settings
-    MODEL_NAME = os.environ.get("WHISPERX_MODEL", "large-v3")
+    MODEL_NAME = os.environ.get("WHISPERX_MODEL", "medium")
     BATCH_SIZE = _env_int("WHISPERX_BATCH_SIZE", 8)
     MIN_BATCH_SIZE = _env_int("WHISPERX_MIN_BATCH_SIZE", 2)
     OOM_FALLBACK_COMPUTE_TYPE = (
@@ -33,9 +55,9 @@ class PipelineConfig:
     LANGUAGE = os.environ.get("WHISPERX_LANGUAGE") or None  # None = auto-detect language
     
     # Beam search settings
-    BEAM_SIZE = int(os.environ.get("WHISPERX_BEAM_SIZE", "5"))
-    BEST_OF = int(os.environ.get("WHISPERX_BEST_OF", "5"))
-    PATIENCE = float(os.environ.get("WHISPERX_PATIENCE", "1.5"))
+    BEAM_SIZE = _env_int("WHISPERX_BEAM_SIZE", 5)
+    BEST_OF = _env_int("WHISPERX_BEST_OF", 5)
+    PATIENCE = _env_float("WHISPERX_PATIENCE", 1.5, minimum=0.0)
 
     # Optional stages. Keep defaults enabled to preserve current output quality.
     ENABLE_ALIGNMENT = _env_bool("ENABLE_ALIGNMENT", True)
@@ -45,14 +67,14 @@ class PipelineConfig:
     ENABLE_AGENDA_DETECTION = _env_bool("ENABLE_AGENDA_DETECTION", True)
     
     # VAD options (tuned for meeting audio with multiple speakers)
-    VAD_ONSET = 0.500       # Speech start threshold (higher = less false positives)
-    VAD_OFFSET = 0.363      # Speech end threshold
-    MIN_DURATION_ON = 0.10  # Min speech duration (filter out clicks/noise)
-    MIN_DURATION_OFF = 0.10 # Min silence to split segments (avoid over-splitting)
+    VAD_ONSET = _env_float("WHISPERX_VAD_ONSET", 0.500, minimum=0.0, maximum=1.0)
+    VAD_OFFSET = _env_float("WHISPERX_VAD_OFFSET", 0.363, minimum=0.0, maximum=1.0)
+    MIN_DURATION_ON = _env_float("WHISPERX_MIN_DURATION_ON", 0.10, minimum=0.0)
+    MIN_DURATION_OFF = _env_float("WHISPERX_MIN_DURATION_OFF", 0.10, minimum=0.0)
     
     # Speaker diarization settings
-    MIN_SPEAKERS = None     # None = auto-detect (let pyannote decide)
-    MAX_SPEAKERS = None     # None = auto-detect
+    MIN_SPEAKERS = _env_optional_int("DIARIZATION_MIN_SPEAKERS", None)
+    MAX_SPEAKERS = _env_optional_int("DIARIZATION_MAX_SPEAKERS", None)
     
     # HuggingFace token for diarization
     HF_TOKEN = os.environ.get("HF_TOKEN", "")

@@ -37,14 +37,21 @@ class EmailService:
     def __init__(
         self,
         smtp_server: str = "",
-        smtp_port: int = 25,
+        smtp_port: int | None = None,
         username: str = "",
         password: str = "",
         sender_email: str = "",
         smtp_secure: str | None = None,
     ) -> None:
         self.smtp_server = smtp_server or os.getenv("SMTP_SERVER", "")
-        self.smtp_port = smtp_port or int(os.getenv("SMTP_PORT", "25"))
+        configured_port = os.getenv("SMTP_PORT", "").strip()
+        self.smtp_port = (
+            smtp_port
+            if smtp_port is not None
+            else int(configured_port or "25")
+        )
+        if not 1 <= self.smtp_port <= 65535:
+            raise ValueError("SMTP port must be between 1 and 65535")
         self.username = username or os.getenv("EMAIL_USERNAME", "")
         self.password = password or os.getenv("EMAIL_PASSWORD", "")
         self.sender_email = sender_email or os.getenv("SENDER_EMAIL", "")

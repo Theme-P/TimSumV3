@@ -7,8 +7,32 @@ log() {
   printf '%s %s\n' "$(date --iso-8601=seconds)" "$*"
 }
 
+state_dir="${BACKUP_STATE_DIR:-/var/lib/timsum-backup}"
+mkdir -p "$state_dir"
+
+write_state() {
+  local name="$1"
+  local value="$2"
+  local temporary="$state_dir/.${name}.$$"
+  printf '%s\n' "$value" > "$temporary"
+  mv "$temporary" "$state_dir/$name"
+}
+
+record_failure() {
+  local exit_code=$?
+  write_state last_failure_at "$(date +%s)"
+  write_state status failed
+  exit "$exit_code"
+}
+
+write_state last_attempt_at "$(date +%s)"
+write_state status running
+trap record_failure ERR
+
 fail() {
   log "ERROR: $*" >&2
+  write_state last_failure_at "$(date +%s)"
+  write_state status failed
   exit 1
 }
 
@@ -21,10 +45,15 @@ yaml_single_quote() {
   printf '%s' "$1" | sed "s/'/''/g"
 }
 
+raw_mongo_backup_user="${MONGO_BACKUP_USER:-}"
+raw_mongo_backup_pass="${MONGO_BACKUP_PASS:-}"
+raw_backup_minio_access_key="${BACKUP_MINIO_ACCESS_KEY:-}"
+raw_backup_minio_secret_key="${BACKUP_MINIO_SECRET_KEY:-}"
+
 MONGO_BACKUP_HOST="${MONGO_BACKUP_HOST:-mongo}"
 MONGO_BACKUP_PORT="${MONGO_BACKUP_PORT:-27017}"
-MONGO_BACKUP_USER="${MONGO_BACKUP_USER:-${MONGO_USER:-}}"
-MONGO_BACKUP_PASS="${MONGO_BACKUP_PASS:-${MONGO_PASS:-}}"
+MONGO_BACKUP_USER="${raw_mongo_backup_user:-${MONGO_USER:-}}"
+MONGO_BACKUP_PASS="${raw_mongo_backup_pass:-${MONGO_PASS:-}}"
 MONGO_BACKUP_AUTH_DB="${MONGO_BACKUP_AUTH_DB:-admin}"
 MONGO_DB_NAME="${MONGO_DB_NAME:-timsumv3}"
 MONGO_BACKUP_USE_OPLOG="${MONGO_BACKUP_USE_OPLOG:-false}"
@@ -41,6 +70,24 @@ require_value MONGO_BACKUP_PASS
 require_value MINIO_ACCESS_KEY
 require_value MINIO_SECRET_KEY
 require_value BACKUP_AGE_RECIPIENT
+
+if [[ "${APP_ENV:-development}" == "production" ]]; then
+  [[ -n "$raw_mongo_backup_user" && -n "$raw_mongo_backup_pass" ]] \
+    || fail "production backup requires dedicated MONGO_BACKUP_USER/MONGO_BACKUP_PASS"
+  [[ "$raw_mongo_backup_user" != "${MONGO_USER:-}" ]] \
+    || fail "production Mongo backup user must differ from the application/root user"
+  [[ -n "$raw_backup_minio_access_key" && -n "$raw_backup_minio_secret_key" ]] \
+    || fail "production backup requires limited BACKUP_MINIO credentials"
+  [[ "$raw_backup_minio_access_key" != "${MINIO_USER:-}" ]] \
+    || fail "production backup object-store credential must differ from the application root credential"
+  [[ "$MINIO_ENDPOINT" == https://* ]] \
+    || fail "production backup endpoint must be off-host HTTPS"
+  case "$MINIO_ENDPOINT" in
+    *localhost*|*127.0.0.1*|*minio:9000*)
+      fail "production backup endpoint must not be the application host/object store"
+      ;;
+  esac
+fi
 
 [[ "$BACKUP_RETENTION_DAYS" =~ ^[1-9][0-9]*$ ]] || fail "BACKUP_RETENTION_DAYS must be a positive integer"
 
@@ -140,3 +187,5 @@ mc cp "$remote_base/$(basename "$checksum_path")" "$verify_dir/" >/dev/null
 )
 
 log "Backup completed and verified: $BACKUP_BUCKET/$object_prefix/$(basename "$encrypted_path")"
+write_state last_success_at "$(date +%s)"
+write_state status success

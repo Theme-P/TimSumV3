@@ -3,9 +3,9 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 # Current policy versions — bump these to require re-consent
-PRIVACY_POLICY_VERSION = "1.0"
+PRIVACY_POLICY_VERSION = "1.1"
 TERMS_VERSION = "1.0"
-DATA_PROCESSING_VERSION = "1.0"
+DATA_PROCESSING_VERSION = "1.1"
 
 CONSENT_TYPES = {
     "privacy_policy": {

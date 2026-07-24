@@ -31,6 +31,12 @@ def get_current_user(
         if not user_id or not ObjectId.is_valid(str(user_id)):
             raise HTTPException(status_code=401, detail="Token is invalid!")
 
+        # Tokens issued before auth-versioning are intentionally invalid.  The
+        # first versioned deployment therefore revokes all existing sessions.
+        token_auth_version = user_data_dict.get("ver")
+        if isinstance(token_auth_version, bool) or not isinstance(token_auth_version, int):
+            raise HTTPException(status_code=401, detail="Token is invalid!")
+
         mongo_service = getattr(request.app.state, "mongo_service", None)
         if not mongo_service:
             raise HTTPException(status_code=500, detail="Auth service is unavailable")
@@ -42,6 +48,17 @@ def get_current_user(
         if not user_doc:
             raise HTTPException(status_code=401, detail="User no longer exists")
 
+        stored_auth_version = user_doc.get("auth_version", 1)
+        if (
+            isinstance(stored_auth_version, bool)
+            or not isinstance(stored_auth_version, int)
+            or token_auth_version != stored_auth_version
+        ):
+            raise HTTPException(status_code=401, detail="Token has been revoked")
+
+        if user_doc.get("deletion_pending", False):
+            raise HTTPException(status_code=403, detail="User account is being deleted")
+
         status = user_doc.get("status", USER_STATUS_APPROVED)
         if status != USER_STATUS_APPROVED:
             raise HTTPException(status_code=403, detail="User account is not approved")
@@ -51,6 +68,8 @@ def get_current_user(
             username=user_doc.get("username", ""),
             email=user_doc.get("email", ""),
             role=user_doc.get("role", "user"),
+            auth_version=stored_auth_version,
+            deletion_pending=False,
         )
 
     except HTTPException:

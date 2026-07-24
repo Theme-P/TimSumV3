@@ -65,7 +65,7 @@
 | 13 | User Activity Log & Audit Trail | ✅ เสร็จแล้ว | สูง |
 | 14 | Transcript/Summary รองรับ 3 ภาษา (ไทย/อังกฤษ/จีน) | ✅ เสร็จแล้ว (Phase 12) | กลาง |
 | 15 | Queue Monitoring (Admin) | ✅ เสร็จแล้ว | กลาง |
-| 16 | Server Resource Monitoring + Ollama Management | ✅ เสร็จแล้ว (Phase 10) | กลาง |
+| 16 | Server Resource Monitoring | ✅ เสร็จแล้ว (Phase 10) | กลาง |
 | 17 | Scheduled Daily DB Backup | ✅ Core เสร็จแล้ว | กลาง |
 | 18 | Human Speaker Verification (ยืนยันเสียงโดย Human) | 🔴 ไม่มี | กลาง |
 | 19 | Sub-agenda Auto-separation & Analysis | ✅ เสร็จแล้ว | ต่ำ |
@@ -769,8 +769,7 @@
   - `GET /api/admin/queue/stats` — Celery queue depth, active/reserved/scheduled tasks
   - `GET /api/admin/queue/tasks` — list tasks (pending/active/completed/failed) with details
   - `DELETE /api/admin/queue/tasks/{task_id}` — revoke/cancel task (superadmin)
-  - `GET /api/admin/system/resources` — CPU%, RAM%, GPU%, Disk usage (Docker stats)
-  - `POST /api/admin/system/ollama/restart` — restart Ollama container (superadmin)
+  - `GET /api/admin/system/resources` — CPU%, RAM%, Disk usage
 - ใช้ Celery Inspect API สำหรับ queue data
 - ใช้ `psutil` หรือ Docker API สำหรับ resource metrics
 
@@ -779,7 +778,7 @@
   - Real-time queue stats (jobs waiting, processing, completed today)
   - Server resource gauges (CPU, RAM, GPU, Disk)
   - Task list with status + user + filename
-  - Buttons: Cancel task, Restart Ollama (superadmin only)
+  - Buttons: Cancel task
 - Auto-refresh ทุก 30 วินาที
 
 **Files ที่ต้องแก้/สร้าง:**

@@ -3,12 +3,10 @@ import { useAuth } from '../../contexts/AuthContext';
 import Icon from '../ui/Icon';
 
 const ServerResources = () => {
-  const { token, user } = useAuth();
+  const { token } = useAuth();
   const [resources, setResources] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [status, setStatus] = useState(null);
-  const [restarting, setRestarting] = useState(false);
 
   const fetchResources = useCallback(async () => {
     try {
@@ -32,33 +30,6 @@ const ServerResources = () => {
     const interval = setInterval(fetchResources, 30000);
     return () => clearInterval(interval);
   }, [fetchResources]);
-
-  useEffect(() => {
-    if (!status) return;
-    const timer = setTimeout(() => setStatus(null), 4500);
-    return () => clearTimeout(timer);
-  }, [status]);
-
-  const handleRestartOllama = async () => {
-    if (!window.confirm("คุณต้องการเริ่มระบบ Ollama ใหม่ใช่หรือไม่? (อาจทำให้การทำงานที่กำลังรันอยู่หยุดชะงัก)")) {
-      return;
-    }
-    try {
-      setRestarting(true);
-      const res = await fetch('/api/admin/system/ollama/restart', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Failed to restart Ollama');
-      setStatus({ type: 'success', text: data.message || 'รีสตาร์ท Ollama เรียบร้อย' });
-      fetchResources();
-    } catch (err) {
-      setStatus({ type: 'error', text: `รีสตาร์ท Ollama ไม่สำเร็จ: ${err.message}` });
-    } finally {
-      setRestarting(false);
-    }
-  };
 
   const circleSize = 72;
 
@@ -132,27 +103,7 @@ const ServerResources = () => {
           <span className="icon-label"><Icon name="refresh" className={loading ? 'ui-icon-spin' : ''} /> รีเฟรช</span>
         </button>
 
-        {(user?.role === 'admin' || user?.role === 'superadmin') && (
-          <button
-            onClick={handleRestartOllama}
-            disabled={restarting}
-            style={{
-              padding: '0.4rem 0.8rem', borderRadius: 8, border: '1px solid var(--border-color)',
-              background: 'var(--surface-elevated)', color: '#7c3aed',
-              cursor: restarting ? 'not-allowed' : 'pointer', fontSize: '0.82rem',
-              fontFamily: 'var(--font-thai)', opacity: restarting ? 0.5 : 1,
-            }}
-          >
-            <span className="icon-label"><Icon name={restarting ? 'refresh' : 'zap'} className={restarting ? 'ui-icon-spin' : ''} /> {restarting ? 'กำลังรีสตาร์ท...' : 'รีสตาร์ท Ollama'}</span>
-          </button>
-        )}
       </div>
-
-      {status && (
-        <div className={`admin-notice admin-notice-${status.type}`}>
-          {status.text}
-        </div>
-      )}
 
       {error ? (
         <div className="upload-error">{error}</div>

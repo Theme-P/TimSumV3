@@ -6,8 +6,11 @@ from pydantic import BaseModel, Field
 
 from app.core.auth import get_current_admin, get_current_user
 from app.models.package import PackageLimits, VALID_PACKAGE_REQUEST_STATUSES
-from app.models.user import UserData
+from app.models.user import User, UserData
+from app.services.email_service import EmailService
 from app.services.mongo import MongoService
+from app.core.authorization import authorize_user_management
+from app.services.security import get_client_ip
 
 router = APIRouter(prefix="/api", tags=["package"])
 
@@ -85,19 +88,33 @@ async def create_my_package_request(
 ):
     """Request package upgrade/downgrade/change."""
     try:
+        if user.role != "user":
+            raise HTTPException(status_code=403, detail="บัญชีผู้ดูแลใช้ได้เฉพาะ internal package ที่กำหนดโดย Super Admin")
+        requested_package = mongo_service.get_package_by_id(req.requested_package_id)
+        if not requested_package or requested_package.get("is_active") is False:
+            raise HTTPException(status_code=404, detail="แพ็กเกจที่ขอไม่พร้อมใช้งาน")
+        if int(requested_package.get("tier", 0) or 0) >= 10:
+            raise HTTPException(status_code=403, detail="ไม่สามารถขอ internal package ได้")
         request_id = mongo_service.create_package_request(
             user_id=str(user.id),
             requested_package_id=req.requested_package_id,
             note=req.note,
         )
-        client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "")
         mongo_service.log_activity(
             str(user.id),
             "package_request_create",
             resource_type="package_request",
             resource_id=request_id,
-            ip_address=client_ip,
+            ip_address=get_client_ip(request),
         )
+
+        # Send confirmation email to user
+        pkg = mongo_service.get_package_by_id(req.requested_package_id)
+        pkg_name = pkg["name"] if pkg else req.requested_package_id
+        _send_package_request_confirmation_email(
+            request, str(user.id), user.username, user.email, pkg_name, req.note, mongo_service,
+        )
+
         return {
             "success": True,
             "request_id": request_id,
@@ -131,11 +148,13 @@ async def cancel_my_package_request(
 @router.get("/admin/packages")
 async def admin_list_packages(
     active_only: bool = Query(True),
-    _admin: UserData = Depends(get_current_admin),
+    admin: UserData = Depends(get_current_admin),
     mongo_service: MongoService = Depends(get_mongo_service),
 ):
     """List all packages, including internal packages."""
     packages = mongo_service.get_all_packages(active_only=active_only)
+    if admin.role != "superadmin":
+        packages = [package for package in packages if int(package.get("tier", 0) or 0) < 10]
     return {"success": True, "packages": packages}
 
 
@@ -234,6 +253,22 @@ async def assign_package(
         raise HTTPException(status_code=404, detail="ไม่พบแพ็กเกจที่ระบุ")
 
     try:
+        target = mongo_service.get_user_by_id(user_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="ไม่พบผู้ใช้")
+    authorize_user_management(admin, target, "package")
+
+    tier = int(pkg.get("tier", 0) or 0)
+    if tier >= 10:
+        if admin.role != "superadmin":
+            raise HTTPException(status_code=403, detail="ต้องใช้สิทธิ์ Super Admin สำหรับ internal package")
+        expected_role = "superadmin" if tier >= 99 else "admin"
+        if target.role != expected_role:
+            raise HTTPException(status_code=409, detail="Internal package ไม่ตรงกับ role ของผู้ใช้")
+    elif target.role != "user":
+        raise HTTPException(status_code=409, detail="บัญชีผู้ดูแลต้องใช้ internal package ที่ตรงกับ role")
+
+    try:
         mongo_service.assign_user_package(
             user_id=user_id,
             package_id=req.package_id,
@@ -257,10 +292,15 @@ async def assign_package(
 @router.get("/admin/users/{user_id}/package")
 async def get_user_package_admin(
     user_id: str,
-    _admin: UserData = Depends(get_current_admin),
+    admin: UserData = Depends(get_current_admin),
     mongo_service: MongoService = Depends(get_mongo_service),
 ):
     """Get a specific user's package info."""
+    try:
+        target = mongo_service.get_user_by_id(user_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="ไม่พบผู้ใช้")
+    authorize_user_management(admin, target, "view_package")
     up = mongo_service.get_user_package(user_id)
     return {"success": True, "package": up}
 
@@ -285,6 +325,7 @@ async def admin_list_package_requests(
 async def admin_approve_package_request(
     request_id: str,
     req: PackageRequestReview,
+    request: Request,
     admin: UserData = Depends(get_current_admin),
     mongo_service: MongoService = Depends(get_mongo_service),
 ):
@@ -292,45 +333,66 @@ async def admin_approve_package_request(
     package_request = mongo_service.get_package_request_by_id(request_id)
     if not package_request:
         raise HTTPException(status_code=404, detail="ไม่พบคำขอ")
-    if package_request.get("status") != "pending":
+    if package_request.get("status") not in {"pending", "applying", "approved"}:
         raise HTTPException(status_code=400, detail="คำขอนี้ถูกพิจารณาแล้ว")
 
     pkg = mongo_service.get_package_by_id(package_request["requested_package_id"])
     if not pkg or pkg.get("is_active") is False:
         raise HTTPException(status_code=404, detail="แพ็กเกจที่ขอไม่พร้อมใช้งาน")
+    if int(pkg.get("tier", 0) or 0) >= 10:
+        raise HTTPException(status_code=403, detail="ไม่สามารถอนุมัติ internal package ผ่านคำขอผู้ใช้")
 
-    updated = mongo_service.update_package_request_status(
-        request_id,
-        "approved",
-        reviewed_by=str(admin.id),
-        admin_note=req.admin_note,
-        expected_status="pending",
-    )
-    if not updated:
-        raise HTTPException(status_code=400, detail="คำขอนี้ถูกพิจารณาแล้ว")
+    try:
+        target = mongo_service.get_user_by_id(package_request["user_id"])
+    except ValueError:
+        raise HTTPException(status_code=404, detail="ไม่พบผู้ใช้เจ้าของคำขอ")
+    authorize_user_management(admin, target, "package_request")
+    if target.role != "user":
+        raise HTTPException(status_code=409, detail="บัญชีผู้ดูแลไม่สามารถรับ public package")
+    if target.deletion_pending or target.status != "approved":
+        raise HTTPException(status_code=409, detail="บัญชีผู้ใช้ไม่พร้อมสำหรับการเปลี่ยนแพ็กเกจ")
 
-    mongo_service.assign_user_package(
-        user_id=package_request["user_id"],
-        package_id=package_request["requested_package_id"],
-        assigned_by=str(admin.id),
-        reset_usage=req.reset_usage,
-        source="package_request",
-        request_id=request_id,
-    )
-    mongo_service.log_activity(
-        str(admin.id),
-        "admin_approve_package_request",
-        resource_type="package_request",
-        resource_id=request_id,
-        metadata={"user_id": package_request["user_id"], "package_id": package_request["requested_package_id"]},
-    )
-    return {"success": True, "message": "อนุมัติและเปลี่ยนแพ็กเกจเรียบร้อย"}
+    try:
+        outcome = mongo_service.apply_package_request(
+            request_id,
+            reviewed_by=str(admin.id),
+            admin_note=req.admin_note,
+            reset_usage=req.reset_usage,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="คำขอกำลังถูกประมวลผลหรือโควต้าเปลี่ยนระหว่างอนุมัติ กรุณาลองใหม่",
+        ) from exc
+
+    # Retried requests complete the durable checkpoint but must not duplicate
+    # audit/email side effects after the original approval succeeded.
+    if not outcome.get("idempotent"):
+        mongo_service.log_activity(
+            str(admin.id),
+            "admin_approve_package_request",
+            resource_type="package_request",
+            resource_id=request_id,
+            metadata={"user_id": package_request["user_id"], "package_id": package_request["requested_package_id"]},
+        )
+        _send_package_approved_email(
+            request, package_request["user_id"], pkg["name"], mongo_service,
+        )
+
+    return {
+        "success": True,
+        "idempotent": bool(outcome.get("idempotent")),
+        "message": "อนุมัติและเปลี่ยนแพ็กเกจเรียบร้อย",
+    }
 
 
 @router.put("/admin/package-requests/{request_id}/reject")
 async def admin_reject_package_request(
     request_id: str,
     req: PackageRequestReview,
+    request: Request,
     admin: UserData = Depends(get_current_admin),
     mongo_service: MongoService = Depends(get_mongo_service),
 ):
@@ -340,6 +402,16 @@ async def admin_reject_package_request(
         raise HTTPException(status_code=404, detail="ไม่พบคำขอ")
     if package_request.get("status") != "pending":
         raise HTTPException(status_code=400, detail="คำขอนี้ถูกพิจารณาแล้ว")
+
+    try:
+        target = mongo_service.get_user_by_id(package_request["user_id"])
+    except ValueError:
+        raise HTTPException(status_code=404, detail="ไม่พบผู้ใช้เจ้าของคำขอ")
+    authorize_user_management(admin, target, "package_request")
+
+    # Fetch package name before rejecting (for the email body)
+    pkg = mongo_service.get_package_by_id(package_request["requested_package_id"])
+    pkg_name = pkg["name"] if pkg else "ไม่ทราบชื่อ"
 
     updated = mongo_service.update_package_request_status(
         request_id,
@@ -357,4 +429,121 @@ async def admin_reject_package_request(
         resource_id=request_id,
         metadata={"user_id": package_request["user_id"]},
     )
+
+    # Send rejection email to user
+    _send_package_rejected_email(
+        request, package_request["user_id"], pkg_name, req.admin_note, mongo_service,
+    )
+
     return {"success": True, "message": "ปฏิเสธคำขอเรียบร้อย"}
+
+
+# ── Email Helpers ──
+
+def _send_package_request_confirmation_email(
+    request: Request,
+    user_id: str,
+    username: str,
+    email: str,
+    package_name: str,
+    note: str,
+    mongo_service: MongoService,
+) -> None:
+    """Send confirmation email after user submits a package change request. Non-blocking."""
+    try:
+        email_service: EmailService = request.app.state.email_service
+        if not email_service.is_configured:
+            logger.info(f"Package request email skipped for {email} (SMTP not configured)")
+            return
+
+        display_name = username or email
+        note_line = f"\n- หมายเหตุ: {note}" if note else ""
+        body_text = (
+            f"สวัสดี คุณ{display_name},\n\n"
+            f"คำขอเปลี่ยนแพ็กเกจของคุณได้ถูกบันทึกเรียบร้อยแล้ว\n\n"
+            f"รายละเอียดคำขอ:\n"
+            f"- แพ็กเกจที่ขอ: {package_name}{note_line}\n\n"
+            f"สถานะ: รอการพิจารณาจากผู้ดูแลระบบ\n"
+            f"คุณจะได้รับอีเมลแจ้งผลเมื่อผู้ดูแลระบบพิจารณาเสร็จสิ้น\n\n"
+            f"ขอบคุณครับ,\nทีมงาน TimSum"
+        )
+        email_service.send_simple_email(
+            recipient_email=email,
+            subject="คำขอเปลี่ยนแพ็กเกจของคุณถูกบันทึกแล้ว",
+            body_text=body_text,
+        )
+    except Exception as e:
+        logger.error(f"Failed to send package request email to {email}: {e}")
+
+
+def _send_package_approved_email(
+    request: Request,
+    user_id: str,
+    package_name: str,
+    mongo_service: MongoService,
+) -> None:
+    """Send email notifying user their package request was approved. Non-blocking."""
+    try:
+        email_service: EmailService = request.app.state.email_service
+        if not email_service.is_configured:
+            logger.info(f"Package approval email skipped for user {user_id} (SMTP not configured)")
+            return
+
+        user: User = mongo_service.get_user_by_id(user_id)
+        display_name = user.username or user.email
+
+        body_text = (
+            f"สวัสดี คุณ{display_name},\n\n"
+            f"คำขอเปลี่ยนแพ็กเกจของคุณได้รับการอนุมัติเรียบร้อยแล้ว\n\n"
+            f"รายละเอียด:\n"
+            f"- แพ็กเกจใหม่: {package_name}\n"
+            f"- สถานะ: เปลี่ยนแพ็กเกจสำเร็จ\n\n"
+            f"คุณสามารถเริ่มใช้งานแพ็กเกจใหม่ได้ทันที\n\n"
+            f"หากมีข้อสงสัย กรุณาติดต่อผู้ดูแลระบบ\n\n"
+            f"ขอบคุณที่ใช้บริการ TimSum V3"
+        )
+        email_service.send_simple_email(
+            recipient_email=user.email,
+            subject="คำขอเปลี่ยนแพ็กเกจได้รับการอนุมัติแล้ว",
+            body_text=body_text,
+        )
+    except Exception as e:
+        logger.error(f"Failed to send package approval email for user {user_id}: {e}")
+
+
+def _send_package_rejected_email(
+    request: Request,
+    user_id: str,
+    package_name: str,
+    admin_note: str,
+    mongo_service: MongoService,
+) -> None:
+    """Send email notifying user their package request was rejected. Non-blocking."""
+    try:
+        email_service: EmailService = request.app.state.email_service
+        if not email_service.is_configured:
+            logger.info(f"Package rejection email skipped for user {user_id} (SMTP not configured)")
+            return
+
+        user: User = mongo_service.get_user_by_id(user_id)
+        display_name = user.username or user.email
+
+        # Only show admin note line if admin provided one
+        note_line = f"\n- หมายเหตุจากผู้ดูแล: {admin_note}" if admin_note else ""
+
+        body_text = (
+            f"สวัสดี คุณ{display_name},\n\n"
+            f"คำขอเปลี่ยนแพ็กเกจของคุณได้รับการพิจารณาแล้ว\n\n"
+            f"รายละเอียด:\n"
+            f"- แพ็กเกจที่ขอ: {package_name}\n"
+            f"- สถานะ: ไม่อนุมัติ{note_line}\n\n"
+            f"หากต้องการข้อมูลเพิ่มเติม กรุณาติดต่อผู้ดูแลระบบ\n\n"
+            f"ขอบคุณที่ใช้บริการ TimSum V3"
+        )
+        email_service.send_simple_email(
+            recipient_email=user.email,
+            subject="ผลการพิจารณาคำขอเปลี่ยนแพ็กเกจ",
+            body_text=body_text,
+        )
+    except Exception as e:
+        logger.error(f"Failed to send package rejection email for user {user_id}: {e}")

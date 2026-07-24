@@ -1,7 +1,13 @@
+x-backend-build: &backend-build
+  context: ./backend
+  args:
+    BACKEND_BASE_IMAGE: ${BACKEND_BASE_IMAGE:-nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04}
+    WHISPERX_COMMIT: ${WHISPERX_COMMIT:-main}
+
 services:
   # Database Container — with authentication
   mongo:
-    image: mongo:latest
+    image: ${MONGO_IMAGE:-mongo:7.0.21-jammy}
     container_name: timsumv3-mongo
     restart: unless-stopped
     # No ports exposed — internal network only
@@ -27,7 +33,7 @@ services:
 
   # Redis — Celery broker (with password)
   redis:
-    image: redis:7-alpine
+    image: ${REDIS_IMAGE:-redis:7.4.2-alpine}
     container_name: timsumv3-redis
     restart: unless-stopped
     # No ports exposed — internal network only
@@ -45,11 +51,11 @@ services:
 
   # MinIO — Object Storage (with strong credentials)
   minio:
-    image: minio/minio:latest
+    image: ${MINIO_IMAGE:-minio/minio:RELEASE.2025-04-22T22-12-26Z}
     container_name: timsumv3-minio
     restart: unless-stopped
     ports:
-      - "9001:9001"   # Console only — no data port exposed
+      - "127.0.0.1:9001:9001"   # Console via local SSH tunnel only
     environment:
       - MINIO_ROOT_USER=${MINIO_USER}
       - MINIO_ROOT_PASSWORD=${MINIO_PASS}
@@ -68,16 +74,19 @@ services:
 
   # Backend — FastAPI (API only, no GPU needed)
   backend:
-    build: ./backend
+    build: *backend-build
+    image: ${BACKEND_IMAGE:-timsumv3-backend}:${TIMSUM_IMAGE_TAG:-local}
     container_name: timsumv3-backend
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:8000:8000"
+    expose:
+      - "8000"
     env_file:
       - .env
     environment:
       - TZ=Asia/Bangkok
+      - APP_ENV=${APP_ENV:-development}
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - RATE_LIMIT_REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/1
       - MONGO_CONNECTION_STRING=mongodb://${MONGO_USER}:${MONGO_PASS}@mongo:27017
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_USER}
@@ -94,7 +103,7 @@ services:
       - app-network
     mem_limit: 4g
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/ready', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -102,7 +111,8 @@ services:
 
   # Celery Worker — GPU transcription (runs on GPU node)
   worker:
-    build: ./backend
+    build: *backend-build
+    image: ${BACKEND_IMAGE:-timsumv3-backend}:${TIMSUM_IMAGE_TAG:-local}
     container_name: timsumv3-worker
     restart: unless-stopped
     runtime: nvidia
@@ -127,12 +137,12 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    command: celery -A app.celery_app:celery_app worker --loglevel=info --queues=transcription --concurrency=${CELERY_WORKER_CONCURRENCY:-1} --pool=solo
+    command: celery -A app.celery_app:celery_app worker --loglevel=info --queues=transcription --concurrency=${CELERY_WORKER_CONCURRENCY:-1} --pool=solo --hostname=transcription@%h
     networks:
       - app-network
     mem_limit: 16g
     healthcheck:
-      test: ["CMD-SHELL", "celery -A app.celery_app:celery_app inspect ping --timeout 10 2>/dev/null | grep -q 'pong' || exit 1"]
+      test: ["CMD-SHELL", "celery -A app.celery_app:celery_app inspect ping --destination transcription@$${HOSTNAME} --timeout 10 2>/dev/null | grep -q 'pong' || exit 1"]
       interval: 60s
       timeout: 15s
       retries: 3
@@ -140,7 +150,8 @@ services:
 
   # Celery Worker — API/CPU summary pipeline (no GPU reservation)
   summary-worker:
-    build: ./backend
+    build: *backend-build
+    image: ${BACKEND_IMAGE:-timsumv3-backend}:${TIMSUM_IMAGE_TAG:-local}
     container_name: timsumv3-summary-worker
     restart: unless-stopped
     environment:
@@ -159,16 +170,77 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    command: celery -A app.celery_app:celery_app worker --loglevel=info --queues=summary --concurrency=${SUMMARY_WORKER_CONCURRENCY:-2} --pool=threads
+    command: celery -A app.celery_app:celery_app worker --loglevel=info --queues=summary --concurrency=${SUMMARY_WORKER_CONCURRENCY:-2} --pool=threads --hostname=summary@%h
     networks:
       - app-network
     mem_limit: 4g
     healthcheck:
-      test: ["CMD-SHELL", "celery -A app.celery_app:celery_app inspect ping --timeout 10 2>/dev/null | grep -q 'pong' || exit 1"]
+      test: ["CMD-SHELL", "celery -A app.celery_app:celery_app inspect ping --destination summary@$${HOSTNAME} --timeout 10 2>/dev/null | grep -q 'pong' || exit 1"]
       interval: 60s
       timeout: 15s
       retries: 3
       start_period: 60s
+
+  # Celery Worker — reconciliation, retention, deletion and outbox tasks.
+  maintenance-worker:
+    build: *backend-build
+    image: ${BACKEND_IMAGE:-timsumv3-backend}:${TIMSUM_IMAGE_TAG:-local}
+    container_name: timsumv3-maintenance-worker
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Bangkok
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - MONGO_CONNECTION_STRING=mongodb://${MONGO_USER}:${MONGO_PASS}@mongo:27017
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_USER}
+      - MINIO_SECRET_KEY=${MINIO_PASS}
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    command: celery -A app.celery_app:celery_app worker --loglevel=info --queues=maintenance --concurrency=1 --pool=solo --hostname=maintenance@%h
+    networks:
+      - app-network
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.celery_app:celery_app inspect ping --destination maintenance@$${HOSTNAME} --timeout 10 2>/dev/null | grep -q 'pong' || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
+
+  celery-beat:
+    build: *backend-build
+    image: ${BACKEND_IMAGE:-timsumv3-backend}:${TIMSUM_IMAGE_TAG:-local}
+    container_name: timsumv3-celery-beat
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Bangkok
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - MONGO_CONNECTION_STRING=mongodb://${MONGO_USER}:${MONGO_PASS}@mongo:27017
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_USER}
+      - MINIO_SECRET_KEY=${MINIO_PASS}
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    command: celery -A app.celery_app:celery_app beat --loglevel=info --schedule=/var/run/celery/celerybeat-schedule
+    tmpfs:
+      - /var/run/celery
+    networks:
+      - app-network
+    mem_limit: 512m
 
   # Daily encrypted MongoDB backup — opt in with: --profile backup
   backup:
@@ -176,10 +248,15 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.backup
+      args:
+        MINIO_MC_IMAGE: ${MINIO_MC_IMAGE:-minio/mc:RELEASE.2025-04-16T18-13-26Z}
+        MONGO_TOOLS_IMAGE: ${MONGO_TOOLS_IMAGE:-mongo:8.0.9-noble}
+    image: ${BACKUP_IMAGE:-timsumv3-backup}:${TIMSUM_IMAGE_TAG:-local}
     container_name: timsumv3-backup
     restart: unless-stopped
     environment:
       - TZ=Asia/Bangkok
+      - APP_ENV=${APP_ENV:-development}
       - MONGO_BACKUP_HOST=mongo
       - MONGO_BACKUP_PORT=27017
       - MONGO_BACKUP_AUTH_DB=admin
@@ -189,9 +266,7 @@ services:
       - MONGO_BACKUP_USER=${MONGO_BACKUP_USER:-}
       - MONGO_BACKUP_PASS=${MONGO_BACKUP_PASS:-}
       - MONGO_BACKUP_USE_OPLOG=${MONGO_BACKUP_USE_OPLOG:-false}
-      - MINIO_ENDPOINT=http://minio:9000
-      - MINIO_ACCESS_KEY=${MINIO_USER}
-      - MINIO_SECRET_KEY=${MINIO_PASS}
+      - MINIO_ENDPOINT=${BACKUP_S3_ENDPOINT:-}
       - BACKUP_MINIO_ACCESS_KEY=${BACKUP_MINIO_ACCESS_KEY:-}
       - BACKUP_MINIO_SECRET_KEY=${BACKUP_MINIO_SECRET_KEY:-}
       - BACKUP_AGE_RECIPIENT=${BACKUP_AGE_RECIPIENT:-}
@@ -201,16 +276,18 @@ services:
       - BACKUP_SCHEDULE_MINUTE=${BACKUP_SCHEDULE_MINUTE:-0}
       - BACKUP_RUN_ON_STARTUP=${BACKUP_RUN_ON_STARTUP:-false}
       - BACKUP_CONFIGURE_BUCKET=${BACKUP_CONFIGURE_BUCKET:-true}
+      - BACKUP_STATE_DIR=/var/lib/timsum-backup
+      - BACKUP_MAX_AGE_HOURS=${BACKUP_MAX_AGE_HOURS:-26}
+    volumes:
+      - backup_state:/var/lib/timsum-backup
     depends_on:
       mongo:
-        condition: service_healthy
-      minio:
         condition: service_healthy
     networks:
       - app-network
     mem_limit: 1g
     healthcheck:
-      test: ["CMD", "test", "-f", "/tmp/backup-scheduler-ready"]
+      test: ["CMD", "/usr/local/bin/backup-healthcheck"]
       interval: 60s
       timeout: 5s
       retries: 3
@@ -219,10 +296,11 @@ services:
   # Frontend — React + Nginx Container
   frontend:
     build: ./frontend
+    image: ${FRONTEND_IMAGE:-timsumv3-frontend}:${TIMSUM_IMAGE_TAG:-local}
     container_name: timsumv3-frontend
     restart: unless-stopped
-    ports:
-      - "3000:80"
+    expose:
+      - "80"
     depends_on:
       backend:
         condition: service_healthy
@@ -230,6 +308,45 @@ services:
         condition: service_healthy
     networks:
       - app-network
+
+  # The only public production edge. Backend, frontend and MinIO data ports stay
+  # on the private Compose network; the MinIO console is loopback-only above.
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2.10.0-alpine}
+    container_name: timsumv3-caddy
+    restart: unless-stopped
+    environment:
+      - PUBLIC_HOST=${PUBLIC_HOST:-localhost}
+      - TLS_MODE=${TLS_MODE:-internal}
+      - ACME_EMAIL=${ACME_EMAIL:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/caddy/Caddyfile.internal:/etc/caddy/Caddyfile.internal:ro
+      - ./deploy/caddy/Caddyfile.acme:/etc/caddy/Caddyfile.acme:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        case "$${TLS_MODE}" in
+          internal|acme) exec caddy run --config "/etc/caddy/Caddyfile.$${TLS_MODE}" --adapter caddyfile ;;
+          *) echo "TLS_MODE must be internal or acme" >&2; exit 2 ;;
+        esac
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "caddy", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
 networks:
   app-network:
@@ -240,3 +357,6 @@ volumes:
   mongo_data:
   redis_data:
   minio_data:
+  backup_state:
+  caddy_data:
+  caddy_config:

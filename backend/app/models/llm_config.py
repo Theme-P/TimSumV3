@@ -8,10 +8,19 @@ from bson import ObjectId
 
 
 DEFAULT_NTC_MODEL = "ict-ollama/gemma4:31b-it-q4_K_M"
-DEFAULT_FALLBACK_MODELS = ["ict-ollama/qwen2.5:72b-instruct-q4_K_M"]
+DEFAULT_GLM_FALLBACK_MODEL = "ict-ollama/glm4.7flashq4:latest"
+DEFAULT_QWEN_FALLBACK_MODEL = "ict-ollama/qwen2.5:72b-instruct-q4_K_M"
+DEFAULT_FALLBACK_MODEL_VALUE = DEFAULT_GLM_FALLBACK_MODEL
+DEFAULT_FALLBACK_MODELS = [
+    model.strip()
+    for model in os.getenv("NTC_FALLBACK_MODELS", DEFAULT_FALLBACK_MODEL_VALUE).split(",")
+    if model.strip()
+] or [DEFAULT_GLM_FALLBACK_MODEL]
 LEGACY_PRIMARY_MODELS = {"gpt-4.1"}
 LEGACY_FALLBACK_MODEL_ALIASES = {
-    "qwen2.5:72b-instruct-q4_K_M": "ict-ollama/qwen2.5:72b-instruct-q4_K_M",
+    "qwen2.5:72b-instruct-q4_K_M": DEFAULT_QWEN_FALLBACK_MODEL,
+    "seallms-v3-7b:latest": DEFAULT_GLM_FALLBACK_MODEL,
+    "ict-ollama/seallms-v3-7b:latest": DEFAULT_GLM_FALLBACK_MODEL,
 }
 LEGACY_FALLBACK_MODELS_TO_DROP = {"scb10x/typhoon2.1-gemma3-12b"}
 

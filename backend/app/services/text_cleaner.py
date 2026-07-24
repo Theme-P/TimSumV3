@@ -1,12 +1,12 @@
 """
 Transcription Text Cleaner — ported from TimSumV2ToV3.
 
-Removes noise patterns, repetitive phrases, and excessive word occurrences
-from WhisperX transcription output to improve summary quality.
+Removes known noise patterns and consecutive repetitive phrases from WhisperX
+output without applying document-wide word-frequency limits.  Ordinary meeting
+terms can legitimately occur hundreds of times and must never be discarded.
 """
 
 import re
-from collections import Counter
 
 
 def clean_transcription(text: str) -> str:
@@ -20,27 +20,35 @@ def clean_transcription(text: str) -> str:
     if not text or not text.strip():
         return text
 
-    text = remove_noise_patterns(text)
-    text = remove_repetitive_phrases(text)
-    text = filter_excessive_words(text)
-    
-    # Clean up extra whitespace
-    text = re.sub(r'\s+', ' ', text).strip()
-    
-    return text
+    # Work line-by-line so speaker transcript boundaries remain stable.  The
+    # pipeline cleans canonical segments once; this also keeps the helper safe
+    # for callers that pass a preformatted multi-line transcript.
+    cleaned_lines = []
+    for line in text.splitlines() or [text]:
+        line = remove_noise_patterns(line)
+        line = remove_repetitive_phrases(line)
+        line = re.sub(r"[ \t\f\v]+", " ", line).strip()
+        if line:
+            cleaned_lines.append(line)
+    return "\n".join(cleaned_lines)
+
+
+def join_canonical_segments(segments: list[dict]) -> str:
+    """Join already-cleaned canonical segments without erasing boundaries."""
+    return "\n".join(
+        str(segment.get("text") or "").strip()
+        for segment in segments
+        if str(segment.get("text") or "").strip()
+    )
 
 
 def remove_noise_patterns(text: str) -> str:
-    """Remove common ASR hallucination / noise patterns via regex."""
+    """Remove explicit ASR noise markers, never ordinary transcript terms."""
     noise_patterns = [
-        r'เสียงดนตรี+',           # Music noise hallucination
-        r'สดที่\s*A-TECH\s*งานเลี้ยง+',  # Specific recurring hallucination
-        r'สดงสดที่+',              # Repetitive pattern
-        r'แสดงสดที่+',             # Display pattern
-        r'\[เสียงเพลง\]',          # Music bracket
-        r'\[เสียงดนตรี\]',         # Music bracket
-        r'\(เสียงเพลง\)',          # Music paren
-        r'\(เสียงดนตรี\)',         # Music paren
+        r'\[(?:เสียงเพลง|เสียงดนตรี|music|noise|inaudible)\]',
+        r'\((?:เสียงเพลง|เสียงดนตรี|music|noise|inaudible)\)',
+        r'<(?:music|noise|inaudible)>',
+        r'♪+',
     ]
 
     for pattern in noise_patterns:
@@ -51,7 +59,7 @@ def remove_noise_patterns(text: str) -> str:
 
 def remove_repetitive_phrases(
     text: str,
-    min_phrase_length: int = 2,
+    min_phrase_length: int = 1,
     max_repetitions: int = 2,
 ) -> str:
     """
@@ -105,23 +113,12 @@ def remove_repetitive_phrases(
 
 def filter_excessive_words(text: str, max_occurrences: int = 3) -> str:
     """
-    Filter out words that appear more than `max_occurrences` times in the
-    entire text, keeping only the first N occurrences.
-    
-    This helps remove hallucinated words that WhisperX sometimes repeats
-    throughout the entire transcript.
+    Backward-compatible no-op for the removed global frequency filter.
+
+    Historically this function deleted every occurrence after the third one
+    anywhere in the transcript, corrupting common words such as names and
+    agenda terms.  Consecutive hallucinations are handled by
+    :func:`remove_repetitive_phrases`; non-consecutive words are preserved.
     """
-    words = text.split()
-    word_counts = Counter(words)
-    seen_counts: dict[str, int] = {}
-    filtered_words = []
-
-    for word in words:
-        if word_counts[word] > max_occurrences:
-            seen_counts[word] = seen_counts.get(word, 0) + 1
-            if seen_counts[word] <= max_occurrences:
-                filtered_words.append(word)
-        else:
-            filtered_words.append(word)
-
-    return ' '.join(filtered_words)
+    del max_occurrences
+    return text

@@ -1,5 +1,5 @@
 """
-Test script to verify the configured NTC Gateway LLM works with NTC_API_KEY.
+Manual smoke script to verify the configured NTC Gateway LLM works with NTC_API_KEY.
 """
 import os
 import sys
@@ -36,7 +36,7 @@ def sanitize_gateway_error(text: str) -> str:
     sanitized = re.sub(r"sk-[A-Za-z0-9._-]+", "sk-[redacted]", sanitized)
     return sanitized
 
-def test_llm_gateway():
+def run_llm_gateway_smoke():
     """Test the configured LLM through the NTC Gateway API."""
     if not LLM_API_KEY:
         print("❌ Error: NTC_API_KEY not found in environment variables")
@@ -99,5 +99,5 @@ def test_llm_gateway():
         return False
 
 if __name__ == "__main__":
-    success = test_llm_gateway()
+    success = run_llm_gateway_smoke()
     sys.exit(0 if success else 1)

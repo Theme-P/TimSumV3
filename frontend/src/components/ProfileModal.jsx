@@ -88,7 +88,7 @@ function RelativeTime({ timestamp }) {
     return <span title={parseUtcDate(timestamp).toLocaleString()}>{timeString}</span>;
 }
 
-function ProfileModal({ isOpen, onClose, userInfo, token }) {
+function ProfileModal({ isOpen, onClose, userInfo, token, onProfileUpdated }) {
     const [pkgData, setPkgData] = useState(null)
     const [activeTab, setActiveTab] = useState('profile')
     const [profile, setProfile] = useState({
@@ -227,7 +227,10 @@ function ProfileModal({ isOpen, onClose, userInfo, token }) {
             })
             const data = await res.json()
             if (!res.ok) throw new Error(data.detail || data.message || 'อัปเดตโปรไฟล์ไม่สำเร็จ')
-            
+
+            if (onProfileUpdated) {
+                await onProfileUpdated()
+            }
             setProfileStatus({ type: 'success', message: 'อัปเดตข้อมูลโปรไฟล์เรียบร้อยแล้ว' })
         } catch (err) {
             setProfileStatus({ type: 'error', message: err.message })

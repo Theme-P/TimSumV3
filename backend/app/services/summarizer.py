@@ -6,7 +6,8 @@ import json
 import re
 import logging
 import time
-from typing import Callable, Dict, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Optional
 
 from pymongo.database import Database
 
@@ -30,6 +31,23 @@ from .summary_pipeline import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LLMCallResult:
+    """Internal model-call outcome; legacy callers still receive plain text."""
+
+    content: str = ""
+    timed_out: bool = False
+    error_kind: Optional[str] = None
+    model: Optional[str] = None
+    attempts: int = 0
+
+
+def _coerce_llm_result(value: Any, *, model: Optional[str] = None) -> LLMCallResult:
+    if isinstance(value, LLMCallResult):
+        return value
+    return LLMCallResult(content=str(value or "").strip(), model=model)
 
 
 def _run_cancel_check(cancel_check: Optional[Callable[[], None]] = None):
@@ -378,11 +396,12 @@ def _call_ntc_gateway(
     model_name: str = None,
     cooldown_on_read_timeout: bool = True,
     cooldown_on_api_error: bool = True,
-) -> str:
+    attempt_timeout_provider: Optional[Callable[[str, int, Optional[int]], Optional[int]]] = None,
+) -> LLMCallResult:
     """Call the NTC gateway with bounded retries and per-model cooldown."""
     if not NTC_API_KEY:
         logger.error("NTC_API_KEY not set")
-        return ""
+        return LLMCallResult(error_kind="configuration_error")
 
     model = model_name or NTC_MODEL
     now = time.monotonic()
@@ -393,7 +412,7 @@ def _call_ntc_gateway(
             model,
             max(1, round(cooldown_until - now)),
         )
-        return ""
+        return LLMCallResult(error_kind="model_cooldown", model=model)
 
     headers = {
         "Authorization": f"Bearer {NTC_API_KEY}",
@@ -438,9 +457,39 @@ def _call_ntc_gateway(
     request_tokens = estimate_tokens(system_prompt) + estimate_tokens(user_prompt)
     attempts = NTC_LLM_MAX_RETRIES + 1
     retriable_statuses = {408, 425, 429, 500, 502, 503, 504}
-    read_timeout_label = "unlimited" if timeout is None else f"{timeout}s"
     stream_response = NTC_LLM_STREAM_RESPONSES and model != DEFAULT_GLM_FALLBACK_MODEL
+    last_error_kind: Optional[str] = None
+    attempts_made = 0
+
+    def timeout_for_attempt(attempt_number: int) -> Optional[int]:
+        if attempt_timeout_provider is None:
+            return timeout
+        provided = attempt_timeout_provider(model, attempt_number, timeout)
+        if timeout is None:
+            return provided
+        if provided is None:
+            return timeout
+        return max(1, min(int(timeout), int(provided)))
+
+    def wait_before_retry(attempt_number: int) -> bool:
+        delay = NTC_LLM_RETRY_BACKOFF_SECONDS * (2 ** (attempt_number - 1))
+        if attempt_timeout_provider is not None:
+            next_timeout = timeout_for_attempt(attempt_number + 1)
+            if next_timeout is not None and next_timeout <= delay:
+                logger.warning(
+                    "Skipping model %s retry because remaining request budget is %ss",
+                    model,
+                    next_timeout,
+                )
+                return False
+        logger.warning("Retrying model %s in %.1fs", model, delay)
+        time.sleep(delay)
+        return True
+
     for attempt in range(1, attempts + 1):
+        effective_timeout = timeout_for_attempt(attempt)
+        attempts_made = attempt
+        read_timeout_label = "unlimited" if effective_timeout is None else f"{effective_timeout}s"
         logger.info(
             "LLM request model=%s attempt=%s/%s estimated_input_tokens=%s "
             "max_output_tokens=%s read_timeout=%s stream=%s",
@@ -463,7 +512,7 @@ def _call_ntc_gateway(
                 NTC_API_URL,
                 headers=request_headers,
                 json=request_payload,
-                timeout=(NTC_LLM_CONNECT_TIMEOUT_SECONDS, timeout),
+                timeout=(NTC_LLM_CONNECT_TIMEOUT_SECONDS, effective_timeout),
                 stream=request_streaming,
             )
         except requests.exceptions.RequestException as exc:
@@ -476,6 +525,7 @@ def _call_ntc_gateway(
             )
             is_read_timeout = _is_read_timeout_exception(exc)
             if is_read_timeout:
+                last_error_kind = "model_timeout"
                 if cooldown_on_read_timeout:
                     logger.warning(
                         "Model %s exceeded the read timeout; entering cooldown without duplicate retry",
@@ -487,14 +537,21 @@ def _call_ntc_gateway(
                         "Primary model %s exceeded the read timeout; next pipeline stage may retry it",
                         model,
                     )
-                return ""
-            if attempt < attempts:
-                delay = NTC_LLM_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
-                logger.warning("Retrying model %s in %.1fs", model, delay)
-                time.sleep(delay)
+                return LLMCallResult(
+                    timed_out=True,
+                    error_kind=last_error_kind,
+                    model=model,
+                    attempts=attempts_made,
+                )
+            last_error_kind = "request_error"
+            if attempt < attempts and wait_before_retry(attempt):
                 continue
             _MODEL_COOLDOWN_UNTIL[model] = time.monotonic() + NTC_LLM_MODEL_COOLDOWN_SECONDS
-            return ""
+            return LLMCallResult(
+                error_kind=last_error_kind,
+                model=model,
+                attempts=attempts_made,
+            )
 
         if resp.status_code >= 400 and request_streaming:
             error_text = _sanitize_gateway_error(resp.text) or resp.reason
@@ -504,13 +561,14 @@ def _call_ntc_gateway(
                     model,
                 )
                 request_streaming = False
+                effective_timeout = timeout_for_attempt(attempt)
                 try:
                     resp.close()
                     resp = requests.post(
                         NTC_API_URL,
                         headers=headers,
                         json=payload,
-                        timeout=(NTC_LLM_CONNECT_TIMEOUT_SECONDS, timeout),
+                        timeout=(NTC_LLM_CONNECT_TIMEOUT_SECONDS, effective_timeout),
                     )
                 except requests.exceptions.RequestException as exc:
                     logger.error(
@@ -522,6 +580,7 @@ def _call_ntc_gateway(
                     )
                     is_read_timeout = _is_read_timeout_exception(exc)
                     if is_read_timeout:
+                        last_error_kind = "model_timeout"
                         if cooldown_on_read_timeout:
                             logger.warning(
                                 "Model %s exceeded the read timeout; entering cooldown without duplicate retry",
@@ -533,14 +592,21 @@ def _call_ntc_gateway(
                                 "Primary model %s exceeded the read timeout; next pipeline stage may retry it",
                                 model,
                             )
-                        return ""
-                    if attempt < attempts:
-                        delay = NTC_LLM_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
-                        logger.warning("Retrying model %s in %.1fs", model, delay)
-                        time.sleep(delay)
+                        return LLMCallResult(
+                            timed_out=True,
+                            error_kind=last_error_kind,
+                            model=model,
+                            attempts=attempts_made,
+                        )
+                    last_error_kind = "request_error"
+                    if attempt < attempts and wait_before_retry(attempt):
                         continue
                     _MODEL_COOLDOWN_UNTIL[model] = time.monotonic() + NTC_LLM_MODEL_COOLDOWN_SECONDS
-                    return ""
+                    return LLMCallResult(
+                        error_kind=last_error_kind,
+                        model=model,
+                        attempts=attempts_made,
+                    )
 
         if resp.status_code >= 400:
             error_text = _sanitize_gateway_error(resp.text) or resp.reason
@@ -554,18 +620,20 @@ def _call_ntc_gateway(
                 attempts,
                 error_text,
             )
-            if retriable and attempt < attempts:
-                delay = NTC_LLM_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
-                logger.warning("Retrying model %s in %.1fs", model, delay)
-                time.sleep(delay)
+            last_error_kind = "model_not_found" if model_not_found else "api_error"
+            if retriable and attempt < attempts and wait_before_retry(attempt):
                 continue
             if model_not_found or (retriable and cooldown_on_api_error):
                 _MODEL_COOLDOWN_UNTIL[model] = time.monotonic() + NTC_LLM_MODEL_COOLDOWN_SECONDS
-            return ""
+            return LLMCallResult(
+                error_kind=last_error_kind,
+                model=model,
+                attempts=attempts_made,
+            )
 
         if request_streaming:
             try:
-                result, stream_timed_out = _read_streaming_response(resp, model, timeout)
+                result, stream_timed_out = _read_streaming_response(resp, model, effective_timeout)
             except requests.exceptions.RequestException as exc:
                 partial = ""
                 logger.error(
@@ -577,6 +645,7 @@ def _call_ntc_gateway(
                 )
                 is_read_timeout = _is_read_timeout_exception(exc)
                 if is_read_timeout:
+                    last_error_kind = "model_timeout"
                     if cooldown_on_read_timeout:
                         logger.warning(
                             "Model %s exceeded the streaming read timeout; entering cooldown",
@@ -588,36 +657,72 @@ def _call_ntc_gateway(
                             "Primary model %s exceeded the streaming read timeout",
                             model,
                         )
-                    return partial
-                if attempt < attempts:
-                    delay = NTC_LLM_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
-                    logger.warning("Retrying model %s in %.1fs", model, delay)
-                    time.sleep(delay)
+                    return LLMCallResult(
+                        content=partial,
+                        timed_out=True,
+                        error_kind=last_error_kind,
+                        model=model,
+                        attempts=attempts_made,
+                    )
+                last_error_kind = "stream_error"
+                if attempt < attempts and wait_before_retry(attempt):
                     continue
                 _MODEL_COOLDOWN_UNTIL[model] = time.monotonic() + NTC_LLM_MODEL_COOLDOWN_SECONDS
-                return ""
+                return LLMCallResult(
+                    error_kind=last_error_kind,
+                    model=model,
+                    attempts=attempts_made,
+                )
             finally:
                 resp.close()
 
             if result:
                 _MODEL_COOLDOWN_UNTIL.pop(model, None)
-                return result
+                return LLMCallResult(
+                    content=result,
+                    timed_out=stream_timed_out,
+                    error_kind="model_timeout" if stream_timed_out else None,
+                    model=model,
+                    attempts=attempts_made,
+                )
             if stream_timed_out:
-                return ""
+                return LLMCallResult(
+                    timed_out=True,
+                    error_kind="model_timeout",
+                    model=model,
+                    attempts=attempts_made,
+                )
             logger.warning("LLM stream returned no content for model %s", model)
-            return ""
+            return LLMCallResult(
+                error_kind="empty_response",
+                model=model,
+                attempts=attempts_made,
+            )
 
         try:
             response_data = resp.json()
             result = _extract_response_content(response_data, model, glm_text_wrapper)
             if result:
                 _MODEL_COOLDOWN_UNTIL.pop(model, None)
-            return result
+            return LLMCallResult(
+                content=result,
+                error_kind=None if result else "empty_response",
+                model=model,
+                attempts=attempts_made,
+            )
         except (AttributeError, KeyError, IndexError, TypeError, ValueError) as e:
             logger.error("NTC AI Gateway response parse error for model %s: %s", model, e)
-            return ""
+            return LLMCallResult(
+                error_kind="invalid_response",
+                model=model,
+                attempts=attempts_made,
+            )
 
-    return ""
+    return LLMCallResult(
+        error_kind=last_error_kind or "unknown_error",
+        model=model,
+        attempts=attempts_made,
+    )
 
 
 def _call_llm_with_fallback(
@@ -630,7 +735,10 @@ def _call_llm_with_fallback(
     override_config: dict = None,
     primary_only: bool = False,
     cancel_check: Optional[Callable[[], None]] = None,
-) -> str:
+    return_diagnostics: bool = False,
+    attempt_timeout_provider: Optional[Callable[[str, int, Optional[int]], Optional[int]]] = None,
+    request_meta: Optional[dict] = None,
+) -> str | LLMCallResult:
     """Try primary model, fallback to other models via NTC AI Gateway."""
     _run_cancel_check(cancel_check)
     config = _normalize_llm_config(override_config) if override_config else get_llm_config(mongo_service)
@@ -640,7 +748,7 @@ def _call_llm_with_fallback(
     # Try primary
     _run_cancel_check(cancel_check)
     logger.info(f"Attempting summary with primary model: {config['primary_model']}")
-    result = _call_ntc_gateway(
+    primary_result = _coerce_llm_result(_call_ntc_gateway(
         system_prompt,
         user_prompt,
         effective_temperature,
@@ -649,34 +757,41 @@ def _call_llm_with_fallback(
         model_name=config["primary_model"],
         cooldown_on_read_timeout=False,
         cooldown_on_api_error=False,
-    )
+        attempt_timeout_provider=attempt_timeout_provider,
+    ), model=config["primary_model"])
     
-    if result and result.strip():
-        return result
+    if primary_result.content.strip():
+        return primary_result if return_diagnostics else primary_result.content
 
     if primary_only:
         logger.warning("Primary model failed; adaptive summary recovery will split this chunk")
-        return ""
+        return primary_result if return_diagnostics else ""
         
     logger.warning("Primary model failed, trying fallback models...")
+    last_result = primary_result
     for fallback_model in config["fallback_models"]:
         _run_cancel_check(cancel_check)
         logger.info(f"Attempting summary with fallback model: {fallback_model}")
         # All configured models are served via NTC AI Gateway (OpenAI-compatible)
-        result = _call_ntc_gateway(
+        result = _coerce_llm_result(_call_ntc_gateway(
             system_prompt,
             user_prompt,
             effective_temperature,
             effective_max_tokens,
             timeout,
             model_name=fallback_model,
-        )
-        if result and result.strip():
+            attempt_timeout_provider=attempt_timeout_provider,
+        ), model=fallback_model)
+        last_result = result
+        if result.content.strip():
             logger.info(f"Successfully generated summary with fallback model {fallback_model}")
-            return result
+            return result if return_diagnostics else result.content
             
     logger.error("All models failed.")
-    return ""
+    if primary_result.timed_out and not last_result.timed_out:
+        last_result.timed_out = True
+        last_result.error_kind = last_result.error_kind or primary_result.error_kind
+    return last_result if return_diagnostics else ""
 
 def _create_fallback_summary(transcription_text: str) -> str:
     """Create a basic fallback summary when all AI models fail."""

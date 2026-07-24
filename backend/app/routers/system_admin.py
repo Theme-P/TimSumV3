@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, Any
-import subprocess
 
 from app.core.auth import get_current_admin
 from app.models.user import UserData
@@ -54,34 +53,3 @@ def get_system_resources(current_user: UserData = Depends(get_current_admin)) ->
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get system resources: {str(e)}")
-
-@router.post("/ollama/restart")
-def restart_ollama(current_user: UserData = Depends(get_current_admin)) -> Dict[str, Any]:
-    """
-    Restart the Ollama docker container.
-    Access restricted to Admin/SuperAdmin.
-    """
-    try:
-        # Assuming the ollama container is named "ollama" or similar in docker-compose
-        # For security, we just run docker restart
-        result = subprocess.run(
-            ["docker", "restart", "ollama"],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        
-        if result.returncode != 0:
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Failed to restart Ollama. Error: {result.stderr}"
-            )
-            
-        return {
-            "status": "success",
-            "message": "Ollama container restarted successfully"
-        }
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=504, detail="Docker restart command timed out")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to restart Ollama: {str(e)}")

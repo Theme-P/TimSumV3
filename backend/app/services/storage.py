@@ -8,13 +8,16 @@ Buckets:
 import os
 import json
 import tempfile
+import math
 from io import BytesIO
 from typing import Any
 from typing import Optional
 
 from loguru import logger
 from minio import Minio
+from minio.commonconfig import ENABLED, Filter
 from minio.error import S3Error
+from minio.lifecycleconfig import Expiration, LifecycleConfig, Rule
 
 BUCKET_AUDIO = "audio-uploads"
 BUCKET_CLIPS = "speaker-clips"
@@ -131,7 +134,34 @@ class StorageService:
         for obj_name in objects:
             self.client.remove_object(bucket, obj_name)
 
+    def configure_retention_lifecycle(self) -> None:
+        """Install server-side expiry failsafes for ephemeral object buckets."""
+        raw_hours = max(1, int(os.getenv("RAW_AUDIO_FAILSAFE_HOURS", "48")))
+        policies = {
+            BUCKET_AUDIO: max(1, math.ceil(raw_hours / 24)),
+            BUCKET_ARTIFACTS: max(1, int(os.getenv("TRANSCRIPT_ARTIFACT_RETENTION_DAYS", "7"))),
+            BUCKET_CLIPS: max(1, int(os.getenv("SPEAKER_CLIP_RETENTION_DAYS", "30"))),
+        }
+        for bucket, days in policies.items():
+            config = LifecycleConfig([
+                Rule(
+                    ENABLED,
+                    rule_filter=Filter(prefix=""),
+                    rule_id=f"timsum-expire-{bucket}",
+                    expiration=Expiration(days=days),
+                ),
+            ])
+            self.client.set_bucket_lifecycle(bucket, config)
+            logger.info("Configured {}-day lifecycle for bucket {}", days, bucket)
+
 
 def get_storage_service() -> StorageService:
     """Factory — called once at app startup."""
-    return StorageService()
+    service = StorageService()
+    try:
+        service.configure_retention_lifecycle()
+    except Exception as exc:
+        if os.getenv("APP_ENV", "development").strip().lower() == "production":
+            raise
+        logger.warning("Could not configure development MinIO lifecycle: {}", exc)
+    return service

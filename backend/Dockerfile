@@ -1,5 +1,9 @@
-# Base image with CUDA support for A100
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+# Base image with CUDA support for A100. Production deploy requires this ARG to
+# be overridden with a tag+sha256 digest from the known-good staging build.
+ARG BACKEND_BASE_IMAGE=nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+FROM ${BACKEND_BASE_IMAGE}
+
+ARG WHISPERX_COMMIT=main
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -29,6 +33,10 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 # Copy and install requirements
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Development may explicitly use "main". deploy.sh requires an immutable
+# 40-character commit so production never resolves Git HEAD implicitly.
+RUN pip install --no-cache-dir "whisperx @ git+https://github.com/m-bain/whisperx.git@${WHISPERX_COMMIT}"
 
 # Create cache and working directories
 RUN mkdir -p /app/.cache/huggingface /app/.cache/torch /app/audio /app/Doc

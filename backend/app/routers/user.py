@@ -1,10 +1,11 @@
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from loguru import logger
 from app.services.mongo import MongoService
 from app.core.auth import get_current_user
 from app.models.user import UserData
+from app.services.security import MAX_PASSWORD_LENGTH, validate_password
 
 router = APIRouter(prefix="/api/user", tags=["user"])
 
@@ -18,15 +19,13 @@ class ProfileUpdateRequest(BaseModel):
     organization: Optional[str] = None
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str
+    current_password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
     new_password: str
 
     @field_validator("new_password")
     @classmethod
-    def password_strength(cls, v):
-        if len(v) < 8:
-            raise ValueError("รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร")
-        return v
+    def password_strength(cls, value: str) -> str:
+        return validate_password(value)
 
 @router.get("/profile")
 async def get_profile(

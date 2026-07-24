@@ -11,22 +11,18 @@ import ProfileModal from '../components/ProfileModal'
 import PackageBadge from '../components/PackageBadge'
 import CustomPromptInput from '../components/CustomPromptInput'
 import Icon from '../components/ui/Icon'
+import { applySpeakerMapping } from '../utils/speakerMapping'
 
 const API_BASE = '/api'
 
-// Decode JWT payload to get user info
-function getUserInfo(token) {
-    try {
-        const payload = JSON.parse(atob(token.split('.')[1]))
-        const name = payload.username || payload.email || ''
-        return {
-            initials: name.substring(0, 2).toUpperCase(),
-            username: payload.username || '',
-            email: payload.email || '',
-            role: payload.role || 'user',
-        }
-    } catch {
-        return { initials: 'ผู้', username: '', email: '', role: 'user' }
+function getUserInfo(user) {
+    const fullName = [user?.first_name, user?.last_name].filter(Boolean).join(' ').trim()
+    const displayName = fullName || user?.username || user?.email || ''
+    return {
+        initials: displayName ? displayName.substring(0, 2).toUpperCase() : 'ผู้',
+        username: user?.username || fullName || '',
+        email: user?.email || '',
+        role: user?.role || 'user',
     }
 }
 
@@ -36,6 +32,12 @@ function MainApp() {
     const [isProcessing, setIsProcessing] = useState(false)
     const [currentStep, setCurrentStep] = useState(0)
     const [progress, setProgress] = useState(0)
+    const [summaryCoverage, setSummaryCoverage] = useState({
+        status: null,
+        coveredSegments: 0,
+        totalSegments: 0,
+        percentage: 0,
+    })
     const [result, setResult] = useState(null)
     const [sessionId, setSessionId] = useState(null)
     const [speakerMapping, setSpeakerMapping] = useState({})
@@ -58,8 +60,8 @@ function MainApp() {
     const pollTimeoutRef = useRef(null)
     const pollErrorCountRef = useRef(0)
 
-    const { token, logout } = useAuth()
-    const userInfo = token ? getUserInfo(token) : { initials: 'ผู้', username: '', email: '' }
+    const { token, user, logout, refreshProfile } = useAuth()
+    const userInfo = useMemo(() => getUserInfo(user), [user])
 
     const emailPrefilledRef = useRef(false)
     useEffect(() => {
@@ -120,12 +122,6 @@ function MainApp() {
     }, [])
 
     const handleFileSelect = (selectedFile) => {
-        if (sessionId) {
-            fetch(`${API_BASE}/session/${sessionId}`, {
-                method: 'DELETE',
-                headers: { 'Authorization': `Bearer ${token}` },
-            }).catch(() => { })
-        }
         setFile(selectedFile)
         setError(null)
         setResult(null)
@@ -134,6 +130,7 @@ function MainApp() {
         setSessionId(null)
         setAutoEmailStatus(null)
         setAutoEmailError(null)
+        setSummaryCoverage({ status: null, coveredSegments: 0, totalSegments: 0, percentage: 0 })
         resultLoadedRef.current = false
     }
 
@@ -168,15 +165,30 @@ function MainApp() {
             setCurrentStep(STEP_MAP[job.current_step] ?? 0)
             setAutoEmailStatus(job.email_status || null)
             setAutoEmailError(job.email_error || null)
+            setSummaryCoverage({
+                status: job.summary_status || null,
+                coveredSegments: Number(job.covered_segments || 0),
+                totalSegments: Number(job.total_segments || 0),
+                percentage: Number(job.coverage_percentage || 0),
+            })
 
-            if (job.status === 'failed') {
+            if (job.status === 'cancelled') {
+                setError(job.error || 'งานนี้ถูกยกเลิกแล้ว')
+                setIsProcessing(false)
+                return
+            }
+
+            const terminalStatuses = new Set(['completed', 'partially_completed', 'failed'])
+            const resultAvailable = job.result_available || job.status === 'completed'
+
+            if (job.status === 'failed' && !resultAvailable) {
                 setError(job.error || 'เกิดข้อผิดพลาดในการประมวลผล')
                 setIsProcessing(false)
                 return
             }
 
-            // Load full result once when pipeline completes.
-            if (job.status === 'completed' && !resultLoadedRef.current) {
+            // Partial and transcript-only failures still preserve a usable result.
+            if (terminalStatuses.has(job.status) && resultAvailable && !resultLoadedRef.current) {
                 const resultRes = await fetch(`${API_BASE}/jobs/${jobId}/result`, {
                     headers: { 'Authorization': `Bearer ${token}` },
                 })
@@ -185,13 +197,13 @@ function MainApp() {
                 setResult(data)
                 setSessionId(data.session_id)
                 setProgress(100)
-                setCurrentStep(5)
+                setCurrentStep(7)
                 setIsProcessing(false)
                 resultLoadedRef.current = true
             }
 
             // Keep polling while pipeline runs OR while an auto-send email is still in flight.
-            const pipelineRunning = job.status !== 'completed' && job.status !== 'failed'
+            const pipelineRunning = !terminalStatuses.has(job.status)
             const emailInFlight = job.email_status === 'queued' || job.email_status === 'sending'
             if (pipelineRunning || emailInFlight) {
                 pollTimeoutRef.current = setTimeout(() => pollJobStatus(jobId), 3000)
@@ -222,6 +234,7 @@ function MainApp() {
         setProgress(0)
         setAutoEmailStatus(null)
         setAutoEmailError(null)
+        setSummaryCoverage({ status: null, coveredSegments: 0, totalSegments: 0, percentage: 0 })
         resultLoadedRef.current = false
         pollErrorCountRef.current = 0
         if (pollTimeoutRef.current) {
@@ -268,33 +281,7 @@ function MainApp() {
     }, [])
 
     const displayResult = useMemo(() => {
-        if (!result) return null
-        if (!speakerMapping || Object.keys(speakerMapping).length === 0) return result
-
-        const mapped = JSON.parse(JSON.stringify(result))
-
-        mapped.transcript.segments = mapped.transcript.segments.map(seg => ({
-            ...seg,
-            speaker: speakerMapping[seg.speaker] || seg.speaker,
-        }))
-
-        let mappedSummary = mapped.summary
-        for (const [generic, real] of Object.entries(speakerMapping)) {
-            mappedSummary = mappedSummary.replaceAll(generic, real)
-        }
-        mapped.summary = mappedSummary
-
-        const newSpeakingTime = {}
-        const newWordCount = {}
-        for (const [speaker, time] of Object.entries(mapped.transcript.speaker_summary.speaking_time)) {
-            newSpeakingTime[speakerMapping[speaker] || speaker] = time
-        }
-        for (const [speaker, count] of Object.entries(mapped.transcript.speaker_summary.word_count)) {
-            newWordCount[speakerMapping[speaker] || speaker] = count
-        }
-        mapped.transcript.speaker_summary = { speaking_time: newSpeakingTime, word_count: newWordCount }
-
-        return mapped
+        return applySpeakerMapping(result, speakerMapping)
     }, [result, speakerMapping])
 
     return (
@@ -479,7 +466,11 @@ function MainApp() {
                         {/* Processing status */}
                         {isProcessing && (
                             <div className="upload-card">
-                                <ProcessingStatus currentStep={currentStep} progress={progress} />
+                                <ProcessingStatus
+                                    currentStep={currentStep}
+                                    progress={progress}
+                                    summaryCoverage={summaryCoverage}
+                                />
                             </div>
                         )}
 
@@ -530,6 +521,7 @@ function MainApp() {
                 onClose={() => setShowProfile(false)}
                 userInfo={userInfo}
                 token={token}
+                onProfileUpdated={refreshProfile}
             />
 
             <SettingsModal

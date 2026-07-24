@@ -11,6 +11,7 @@ const QUEUE_STATUS_OPTIONS = [
     { key: 'queued', label: 'รอดำเนินการ', statKey: 'queued', color: '#c68a19' },
     { key: 'processing', label: 'กำลังประมวลผล', statKey: 'processing', color: '#2563eb' },
     { key: 'completed', label: 'สำเร็จ', statKey: 'completed', color: '#2d8a4e' },
+    { key: 'partially_completed', label: 'สรุปบางส่วน', statKey: 'partially_completed', color: '#b7791f' },
     { key: 'failed', label: 'ล้มเหลว', statKey: 'failed', color: '#c0392b' },
     { key: 'cancelled', label: 'ยกเลิกแล้ว', statKey: 'cancelled', color: '#7f8c8d' },
 ];
@@ -100,6 +101,13 @@ function AdminMonitoring() {
         voice_sample_upload: 'อัปโหลด Voice Sample', voice_sample_delete: 'ลบ Voice Sample',
         admin_approve_user: 'อนุมัติผู้ใช้', admin_reject_user: 'ปฏิเสธผู้ใช้',
         admin_suspend_user: 'ระงับผู้ใช้', admin_assign_package: 'กำหนดแพ็กเกจ',
+        admin_cancel_job: 'ยกเลิกงานประมวลผล',
+        admin_create_package: 'สร้างแพ็กเกจ', admin_update_package: 'แก้ไขแพ็กเกจ',
+        admin_deactivate_package: 'ปิดใช้งานแพ็กเกจ',
+        package_request_create: 'ส่งคำขอเปลี่ยนแพ็กเกจ',
+        package_request_cancel: 'ยกเลิกคำขอเปลี่ยนแพ็กเกจ',
+        admin_approve_package_request: 'อนุมัติคำขอเปลี่ยนแพ็กเกจ',
+        admin_reject_package_request: 'ปฏิเสธคำขอเปลี่ยนแพ็กเกจ',
         consent_given: 'ยินยอม PDPA', consent_withdrawn: 'ถอนการยินยอม',
     };
 
@@ -306,7 +314,7 @@ function AdminMonitoring() {
                                     >
                                         <strong>
                                             {option.key === 'all'
-                                                ? queueStats.total ?? ['queued', 'processing', 'completed', 'failed', 'cancelled']
+                                                ? queueStats.total ?? ['queued', 'processing', 'completed', 'partially_completed', 'failed', 'cancelled']
                                                     .reduce((sum, key) => sum + (queueStats[key] || 0), 0)
                                                 : queueStats[option.statKey] || 0}
                                         </strong>
@@ -401,6 +409,9 @@ function AdminMonitoring() {
                                                             {PROCESS_STEP_LABELS[job.current_step] || job.current_step || 'รอข้อมูล'}
                                                             {Number.isFinite(job.progress) ? ` · ${job.progress}%` : ''}
                                                         </small>
+                                                    )}
+                                                    {job.status === 'partially_completed' && (
+                                                        <small>Coverage {Number(job.coverage_percentage || 0).toFixed(1)}%</small>
                                                     )}
                                                 </span>
                                                 <span className="monitor-time">

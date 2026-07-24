@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Icon from './ui/Icon'
+import { getVoiceFileValidationError, readAudioDuration } from '../utils/voiceValidation'
 
 const API_BASE = '/api'
 
@@ -14,9 +15,25 @@ function VoiceLibrary({ token }) {
     const [speakerName, setSpeakerName] = useState('')
     const [speakerPosition, setSpeakerPosition] = useState('')
     const [selectedFile, setSelectedFile] = useState(null)
+    const [selectedDuration, setSelectedDuration] = useState(null)
+    const [validatingFile, setValidatingFile] = useState(false)
     const [dragOver, setDragOver] = useState(false)
     const audioRef = useRef(null)
+    const playbackRequestRef = useRef(null)
     const fileInputRef = useRef(null)
+
+    const stopPlayback = useCallback(() => {
+        playbackRequestRef.current?.abort()
+        playbackRequestRef.current = null
+        if (audioRef.current) {
+            audioRef.current.pause()
+            if (audioRef.current.objectUrl) {
+                URL.revokeObjectURL(audioRef.current.objectUrl)
+            }
+            audioRef.current = null
+        }
+        setPlayingId(null)
+    }, [])
 
     const fetchSamples = useCallback(async () => {
         try {
@@ -37,8 +54,44 @@ function VoiceLibrary({ token }) {
         fetchSamples()
     }, [fetchSamples])
 
+    useEffect(() => () => stopPlayback(), [stopPlayback])
+
+    const handleFileCandidate = async (file) => {
+        setError(null)
+        setSuccess(null)
+        setSelectedFile(null)
+        setSelectedDuration(null)
+
+        const basicError = getVoiceFileValidationError(file)
+        if (basicError) {
+            setError(basicError)
+            if (fileInputRef.current) fileInputRef.current.value = ''
+            return
+        }
+
+        setValidatingFile(true)
+        try {
+            const duration = await readAudioDuration(file)
+            const durationError = getVoiceFileValidationError(file, duration)
+            if (durationError) throw new Error(durationError)
+            setSelectedFile(file)
+            setSelectedDuration(duration)
+        } catch (validationError) {
+            setError(validationError.message || 'ไม่สามารถตรวจสอบไฟล์เสียงได้')
+            if (fileInputRef.current) fileInputRef.current.value = ''
+        } finally {
+            setValidatingFile(false)
+        }
+    }
+
     const handleUpload = async () => {
         if (!selectedFile || !speakerName.trim()) return
+
+        const validationError = getVoiceFileValidationError(selectedFile, selectedDuration)
+        if (validationError) {
+            setError(validationError)
+            return
+        }
 
         setUploading(true)
         setError(null)
@@ -67,8 +120,10 @@ function VoiceLibrary({ token }) {
             setSpeakerName('')
             setSpeakerPosition('')
             setSelectedFile(null)
+            setSelectedDuration(null)
+            if (fileInputRef.current) fileInputRef.current.value = ''
             setShowUpload(false)
-            fetchSamples()
+            await fetchSamples()
         } catch (err) {
             setError(err.message)
         } finally {
@@ -77,9 +132,10 @@ function VoiceLibrary({ token }) {
     }
 
     const handleDelete = async (sampleId) => {
-        if (!confirm('ต้องการลบตัวอย่างเสียงนี้ใช่ไหม?')) return
+        if (!window.confirm('ต้องการลบตัวอย่างเสียงนี้ใช่ไหม?')) return
 
         try {
+            if (playingId === sampleId) stopPlayback()
             const res = await fetch(`${API_BASE}/voice-samples/${sampleId}`, {
                 method: 'DELETE',
                 headers: { 'Authorization': `Bearer ${token}` },
@@ -92,49 +148,61 @@ function VoiceLibrary({ token }) {
         }
     }
 
-    const handlePlay = (sampleId) => {
+    const handlePlay = async (sampleId) => {
         if (playingId === sampleId) {
-            // Stop playing
-            if (audioRef.current) {
-                audioRef.current.pause()
-                audioRef.current = null
-            }
-            setPlayingId(null)
+            stopPlayback()
             return
         }
 
-        // Stop previous
-        if (audioRef.current) {
-            audioRef.current.pause()
-        }
+        stopPlayback()
+        setError(null)
+        const controller = new AbortController()
+        playbackRequestRef.current = controller
 
-        const audio = new Audio(`${API_BASE}/voice-samples/${sampleId}/play`)
-        // Set auth header via fetch workaround
-        fetch(`${API_BASE}/voice-samples/${sampleId}/play`, {
-            headers: { 'Authorization': `Bearer ${token}` },
-        })
-            .then(r => r.blob())
-            .then(blob => {
-                const url = URL.createObjectURL(blob)
-                const a = new Audio(url)
-                a.onended = () => {
-                    setPlayingId(null)
-                    URL.revokeObjectURL(url)
-                }
-                a.play()
-                audioRef.current = a
-                setPlayingId(sampleId)
+        try {
+            const response = await fetch(`${API_BASE}/voice-samples/${sampleId}/play`, {
+                headers: { 'Authorization': `Bearer ${token}` },
+                signal: controller.signal,
             })
-            .catch(() => setError('ไม่สามารถเล่นเสียงได้'))
+            if (!response.ok) {
+                throw new Error(response.status === 404
+                    ? 'ไม่พบตัวอย่างเสียงนี้แล้ว กรุณาโหลดรายการใหม่'
+                    : 'ไม่สามารถโหลดตัวอย่างเสียงได้')
+            }
+
+            const url = URL.createObjectURL(await response.blob())
+            if (controller.signal.aborted) {
+                URL.revokeObjectURL(url)
+                return
+            }
+
+            const audio = new Audio(url)
+            audio.objectUrl = url
+            audioRef.current = audio
+            audio.onended = stopPlayback
+            audio.onerror = () => {
+                stopPlayback()
+                setError('เบราว์เซอร์ไม่สามารถเล่นรูปแบบเสียงนี้ได้')
+            }
+
+            await audio.play()
+            setPlayingId(sampleId)
+        } catch (playbackError) {
+            if (playbackError.name === 'AbortError') return
+            stopPlayback()
+            setError(playbackError.message || 'ไม่สามารถเล่นเสียงได้')
+        } finally {
+            if (playbackRequestRef.current === controller) {
+                playbackRequestRef.current = null
+            }
+        }
     }
 
     const handleFileDrop = (e) => {
         e.preventDefault()
         setDragOver(false)
         const file = e.dataTransfer?.files?.[0]
-        if (file && file.type.startsWith('audio/')) {
-            setSelectedFile(file)
-        }
+        if (file) handleFileCandidate(file)
     }
 
     const formatDuration = (seconds) => {
@@ -203,14 +271,19 @@ function VoiceLibrary({ token }) {
                             type="file"
                             accept="audio/*"
                             style={{ display: 'none' }}
-                            onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                            onChange={(e) => handleFileCandidate(e.target.files?.[0] || null)}
                         />
-                        {selectedFile ? (
+                        {validatingFile ? (
+                            <div className="voice-library-dropzone-empty">
+                                <Icon name="refresh" className="voice-library-dropzone-icon ui-icon-spin" />
+                                <span>กำลังตรวจสอบไฟล์เสียง...</span>
+                            </div>
+                        ) : selectedFile ? (
                             <div className="voice-library-dropzone-file">
                                 <Icon name="file-audio" className="voice-library-dropzone-icon" />
                                 <span className="voice-library-dropzone-name">{selectedFile.name}</span>
                                 <span className="voice-library-dropzone-size">
-                                    {(selectedFile.size / 1024 / 1024).toFixed(1)} MB
+                                    {(selectedFile.size / 1024 / 1024).toFixed(1)} MB · {formatDuration(selectedDuration)}
                                 </span>
                             </div>
                         ) : (
@@ -250,7 +323,7 @@ function VoiceLibrary({ token }) {
                     <button
                         className="voice-library-upload-btn"
                         onClick={handleUpload}
-                        disabled={!selectedFile || !speakerName.trim() || uploading}
+                        disabled={!selectedFile || !speakerName.trim() || uploading || validatingFile}
                     >
                         {uploading ? (
                             <><Icon name="refresh" className="ui-icon-spin" /> กำลังวิเคราะห์เสียง...</>

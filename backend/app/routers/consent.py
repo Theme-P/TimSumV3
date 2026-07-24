@@ -1,11 +1,14 @@
-from fastapi import APIRouter, Depends, Request, HTTPException
-from pydantic import BaseModel
-from typing import Optional
+import hashlib
+import json
+
+from fastapi import APIRouter, Depends, Request, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, StrictBool
 
 from app.models.user import UserData
 from app.models.consent import CONSENT_TYPES, REQUIRED_CONSENT_TYPES
 from app.services.mongo import MongoService
 from app.core.auth import get_current_user, get_current_admin
+from app.services.security import get_client_ip
 
 router = APIRouter(prefix="/api", tags=["consent"])
 
@@ -14,15 +17,34 @@ def get_mongo_service(request: Request) -> MongoService:
     return request.app.state.mongo_service
 
 
-def get_client_ip(request: Request) -> str:
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+def consent_policy_hash(consent_type: str) -> str:
+    """Hash the canonical policy metadata recorded with a consent event."""
+    policy = {
+        "consent_type": consent_type,
+        **CONSENT_TYPES[consent_type],
+    }
+    encoded = json.dumps(
+        policy,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+class ConsentChoices(BaseModel):
+    """Exact, strict consent choices accepted by the current policy."""
+
+    privacy_policy: StrictBool
+    data_processing: StrictBool
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class ConsentSubmitRequest(BaseModel):
-    consents: dict  # {"privacy_policy": true, "data_processing": true}
+    consents: ConsentChoices
+
+    model_config = ConfigDict(extra="forbid")
 
 
 @router.get("/consent")
@@ -70,26 +92,32 @@ async def submit_consents(
 ):
     """Submit consent choices. Required types must be True to proceed."""
     ip = get_client_ip(request)
+    submitted_consents = req.consents.model_dump()
 
     # Validate all required consents are accepted
     for ct in REQUIRED_CONSENT_TYPES:
-        if not req.consents.get(ct):
+        if not submitted_consents.get(ct):
             raise HTTPException(
                 status_code=400,
                 detail=f"จำเป็นต้องยินยอม '{CONSENT_TYPES[ct]['label']}' เพื่อใช้งานระบบ",
             )
 
     # Save each consent
-    for ct, accepted in req.consents.items():
-        if ct not in CONSENT_TYPES:
-            continue
+    for ct, accepted in submitted_consents.items():
         version = CONSENT_TYPES[ct]["version"]
-        mongo_service.save_consent(str(user.id), ct, version, bool(accepted), ip_address=ip)
+        mongo_service.save_consent(
+            str(user.id),
+            ct,
+            version,
+            accepted,
+            ip_address=ip,
+            policy_hash=consent_policy_hash(ct),
+        )
 
     # Log activity
     mongo_service.log_activity(
         str(user.id), "consent_given",
-        metadata={"types": list(req.consents.keys())},
+        metadata={"types": list(submitted_consents.keys())},
         ip_address=ip,
     )
 
@@ -114,7 +142,14 @@ async def withdraw_consent(
 
     ip = get_client_ip(request)
     version = CONSENT_TYPES[consent_type]["version"]
-    mongo_service.save_consent(str(user.id), consent_type, version, False, ip_address=ip)
+    mongo_service.save_consent(
+        str(user.id),
+        consent_type,
+        version,
+        False,
+        ip_address=ip,
+        policy_hash=consent_policy_hash(consent_type),
+    )
     mongo_service.log_activity(
         str(user.id), "consent_withdrawn",
         metadata={"consent_type": consent_type},
@@ -125,8 +160,8 @@ async def withdraw_consent(
 
 @router.get("/admin/consent-records")
 async def get_all_consent_records(
-    limit: int = 200,
-    offset: int = 0,
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     admin: UserData = Depends(get_current_admin),
     mongo_service: MongoService = Depends(get_mongo_service),
 ):

@@ -1,9 +1,8 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { AuthProvider } from './contexts/AuthContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import ProtectedRoute from './components/ProtectedRoute';
-import ConsentModal from './components/ConsentModal';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import ForgotPassword from './pages/ForgotPassword';
@@ -15,20 +14,11 @@ import AdminDashboard from './pages/AdminDashboard';
 import AdminMonitoring from './pages/AdminMonitoring';
 import AdminLLMSettings from './pages/AdminLLMSettings';
 
-function ConsentGate({ children }) {
-    const { token, needsConsent, consentChecked, markConsented } = useAuth();
-    if (token && consentChecked && needsConsent) {
-        return <ConsentModal token={token} onConsented={markConsented} />;
-    }
-    return children;
-}
-
 function App() {
     return (
         <ThemeProvider>
             <AuthProvider>
             <Router>
-                <ConsentGate>
                 <Routes>
                     <Route path="/login" element={<Login />} />
                     <Route path="/register" element={<Register />} />
@@ -79,7 +69,6 @@ function App() {
 
                     <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
-                </ConsentGate>
             </Router>
             </AuthProvider>
         </ThemeProvider>

@@ -46,6 +46,21 @@ class SummaryPartialTests(unittest.TestCase):
         self.assertEqual(record["partial_chunks"], [1])
         self.assertEqual(record["coverage"], [])
 
+    def test_recovered_partial_chunk_is_not_left_unresolved(self):
+        chunks = [
+            {"chunk_number": 1, "segment_ids": [0, 1, 2]},
+            {"chunk_number": 2, "segment_ids": [3, 4]},
+        ]
+
+        self.assertEqual(
+            pipeline.unresolved_chunk_numbers(chunks, [1], {0, 1}),
+            [1],
+        )
+        self.assertEqual(
+            pipeline.unresolved_chunk_numbers(chunks, [1], {0, 1, 2}),
+            [],
+        )
+
     def test_incremental_summary_marks_partial_metadata(self):
         segments = [
             {"text": "วันนี้หารือเรื่องงบประมาณประจำปี", "speaker": "นายก", "start": 0, "end": 10},

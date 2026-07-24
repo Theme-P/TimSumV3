@@ -22,17 +22,31 @@ db.user.createIndex(
   }
 );
 
-// Job collection — query by user + status, auto-delete after 30 days
+// Job collection — retain terminal diagnostics for 30 days. Running jobs do
+// not expire merely because they have spent a long time in a queue.
 db.job.createIndex({ "user_id": 1, "created_at": -1 });
 db.job.createIndex({ "status": 1 });
-db.job.createIndex({ "created_at": 1 }, { expireAfterSeconds: 2592000 });  // 30 days
+db.job.createIndex({ "completed_at": 1 }, { expireAfterSeconds: 2592000 });
 
-// Session collection — query by user, auto-delete after 90 days
+// History is retained for the published 365-day policy.
 db.session.createIndex({ "user_id": 1, "created_at": -1 });
-db.session.createIndex({ "created_at": 1 }, { expireAfterSeconds: 7776000 });  // 90 days
+db.session.createIndex({ "created_at": 1 }, { expireAfterSeconds: 31536000 });
+db.session.createIndex(
+  { "job_id": 1 },
+  {
+    unique: true,
+    name: "session_job_id_unique",
+    partialFilterExpression: { "job_id": { $type: "string" } }
+  }
+);
 
-// Password reset tokens — auto-delete after 7 days
-db.password_reset.createIndex({ "created_at": 1 }, { expireAfterSeconds: 604800 });  // 7 days
+// Credential and workflow records use explicit absolute expiry timestamps.
+db.password_reset.createIndex({ "expires_at": 1 }, { expireAfterSeconds: 0 });
+db.summary_state.createIndex({ "job_id": 1 }, { unique: true });
+db.summary_state.createIndex({ "expires_at": 1 }, { expireAfterSeconds: 0 });
+db.email_outbox.createIndex({ "event_key": 1 }, { unique: true });
+db.email_outbox.createIndex({ "expires_at": 1 }, { expireAfterSeconds: 0 });
+db.consent_event.createIndex({ "expires_at": 1 }, { expireAfterSeconds: 0 });
 
 // Activity log — auto-delete after 90 days
 db.activity_log.createIndex({ "timestamp": 1 }, { expireAfterSeconds: 7776000 });  // 90 days

@@ -1,0 +1,30 @@
+{$PUBLIC_HOST:localhost} {
+	tls internal
+	encode zstd gzip
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), geolocation=(), payment=(), usb=()"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+	}
+
+	handle /api/* {
+		reverse_proxy backend:8000 {
+			# Never pass an untrusted client-supplied forwarding chain through to
+			# the application. The backend trusts only the Caddy network CIDR.
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto https
+			header_up X-Forwarded-Host {host}
+			header_up -Forwarded
+		}
+	}
+
+	handle {
+		reverse_proxy frontend:80
+	}
+}
