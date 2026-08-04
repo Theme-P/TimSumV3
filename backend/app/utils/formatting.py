@@ -3,8 +3,11 @@ from typing import Optional
 def format_speaker(speaker: Optional[str]) -> str:
     """Format speaker label to Thai"""
     if speaker and speaker.startswith('SPEAKER_'):
-        num = int(speaker.split('_')[1]) + 1
-        return f"คนพูด {num}"
+        try:
+            num = int(speaker.split('_')[1]) + 1
+            return f"คนพูด {num}"
+        except (IndexError, ValueError):
+            pass
     return speaker or "Unknown"
 
 def format_time(seconds: float) -> str:

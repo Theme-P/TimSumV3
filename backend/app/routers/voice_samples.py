@@ -207,7 +207,6 @@ async def upload_voice_sample(
             os.unlink(tmp_path)
 
     # Save to MongoDB
-    from datetime import datetime, timezone
 
     sample_doc = {
         "_id": ObjectId(),

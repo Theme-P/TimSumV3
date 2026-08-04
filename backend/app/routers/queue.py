@@ -77,7 +77,11 @@ async def cancel_task(
         target_user = mongo.get_user_by_id(str(job_doc["user_id"]))
     except ValueError:
         raise HTTPException(status_code=409, detail="เจ้าของงานไม่อยู่ในระบบ")
-    authorize_user_management(admin, target_user, "cancel_job")
+    if str(admin.id) != str(target_user.id):
+        actor_role = getattr(admin, "role", "user")
+        target_role = getattr(target_user, "role", "user")
+        if actor_role == "admin" and target_role != "user":
+            raise HTTPException(status_code=403, detail="Admin ยกเลิกงานได้เฉพาะของผู้ใช้ทั่วไปเท่านั้น")
 
     if job_doc.get("status") == "cancelled":
         return {

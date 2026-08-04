@@ -4,6 +4,7 @@ import os
 import time
 import tempfile
 import logging
+import re
 from typing import Callable, Dict, Any, Optional
 import whisperx
 
@@ -39,6 +40,60 @@ def clear_gpu_memory():
 def is_cuda_oom(exc: Exception) -> bool:
     message = str(exc).lower()
     return "out of memory" in message and ("cuda" in message or "cublas" in message)
+
+def _is_hallucination_segment(segment: dict) -> bool:
+    """Detect if a segment is a hallucination or dead air artifact."""
+    text = (segment.get("text") or "").strip()
+    duration = segment.get("end", 0) - segment.get("start", 0)
+    
+    # 1. Empty segment
+    if not text:
+        return True
+        
+    # 2. Physical Speaking Rate Validation (Characters Per Second)
+    # Normal speech is ~10-15 chars/sec. If it's > 20, it's impossible.
+    if duration > 0:
+        cps = len(text) / duration
+        if cps > 20.0:
+            return True
+            
+    # 3. Acoustic Alignment Validation (Word Scores)
+    # If whisperx.align was run, 'words' will be populated
+    words = segment.get("words", [])
+    if words:
+        valid_scores = [w.get("score") for w in words if "score" in w]
+        if valid_scores:
+            avg_score = sum(valid_scores) / len(valid_scores)
+            if avg_score < 0.4:
+                return True
+    elif "words" in segment and len(text) > 5 and duration > 1.0:
+        # If words list is explicitly empty but text is long, aligner failed completely
+        return True
+    
+    # 4. Common Whisper dead-air hallucinations (YouTube scrape artifacts)
+    text_lower = text.lower().strip(" .")
+    known_hallucinations = {
+        "thank you", "thanks for watching", "subscribe", 
+        "thank you for watching", "please subscribe", "สวัสดีครับ", "สวัสดีค่ะ"
+    }
+    if text_lower in known_hallucinations and duration < 3.0:
+        return True
+            
+    # 5. Very short segment (< 0.7s) with short text, usually just noise/breath
+    if duration < 0.7 and len(text) < 15:
+        return True
+        
+    # 6. Filler-only segment (Thai fillers)
+    filler_pattern = re.compile(r'^[\sไอแอเอ่ออืมฮ่ะอ้าเออาหืออืมมวะว่ะ]+$')
+    if filler_pattern.match(text):
+        return True
+        
+    # 7. WhisperX low confidence metadata (if available)
+    no_speech_prob = segment.get("no_speech_prob", 0)
+    if no_speech_prob > 0.6:  # Stricter than previous 0.7
+        return True
+        
+    return False
 
 class TranscribeSummaryPipeline:
     """
@@ -132,13 +187,21 @@ class TranscribeSummaryPipeline:
                 "beam_size": self.config.BEAM_SIZE,
                 "best_of": self.config.BEST_OF,
                 "patience": self.config.PATIENCE,
-                "condition_on_previous_text": True,
-                "temperatures": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
-                "compression_ratio_threshold": 2.2,
-                "log_prob_threshold": -0.8,
-                "no_speech_threshold": 0.5,
-                "initial_prompt": "สวัสดีครับ This is a meeting transcription. 这是一个会议记录。 ถอดเสียงการประชุมภาษาไทย อังกฤษ และจีน",
-                "repetition_penalty": 1.1,
+                # Disabled: previous-text conditioning propagates hallucinations
+                # from one segment to the next during dead-air gaps.
+                "condition_on_previous_text": False,
+                # Pure Greedy Decoding: High temperatures (0.2+) allow Whisper to guess 
+                # wildly during dead air. Forcing 0.0 means it will drop the output if uncertain.
+                "temperatures": [0.0],
+                # Ultra-strict compression ratio (default 2.4, was 2.0) to catch repetitive hallucinations
+                "compression_ratio_threshold": 1.8,
+                # Stricter log prob (default -1.0) to drop low-confidence decodes
+                "log_prob_threshold": -0.6,
+                # Very strict no-speech threshold to aggressively filter silence/noise
+                "no_speech_threshold": 0.7,
+                # Removed initial_prompt entirely. Even a short prompt can cause
+                # the model to hallucinate conversational fillers during silence.
+                "repetition_penalty": 1.2, # Slightly higher penalty for repetitions
                 "length_penalty": 1.0,
             },
             "vad_options": {
@@ -210,11 +273,12 @@ class TranscribeSummaryPipeline:
                 next_batch_size = max(min_batch_size, batch_size // 2)
                 logger.warning(
                     "WhisperX transcription ran out of VRAM at batch_size=%s; "
-                    "clearing CUDA cache and retrying with batch_size=%s",
+                    "reloading model and retrying with batch_size=%s",
                     batch_size,
                     next_batch_size,
                 )
-                clear_gpu_memory()
+                self.close()
+                self._load_model()
                 batch_size = next_batch_size
     
     def process(
@@ -405,7 +469,13 @@ class TranscribeSummaryPipeline:
         
         logger.info("Cleaning canonical transcript segments...")
         clean_start = time.time()
+        filtered_segments = []
+        
         for segment in segments:
+            # Filter out hallucinations and dead air before downstream processing
+            if _is_hallucination_segment(segment):
+                continue
+                
             speaker = format_speaker(segment.get('speaker'))
             # Keep generic labels (คนพูด 1, คนพูด 2, ...)
             segment['speaker'] = speaker
@@ -415,12 +485,20 @@ class TranscribeSummaryPipeline:
             # Clean repetitive/hallucinated text at segment level
             # so the web UI and DOCX exports also show clean output
             text = clean_transcription(text)
+            
+            # Skip if cleaning resulted in an empty string
+            if not text:
+                continue
+                
             segment['text'] = text
             word_count = len(text.split())
             speakers_time[speaker] = speakers_time.get(speaker, 0) + duration
             speakers_words[speaker] = speakers_words.get(speaker, 0) + word_count
             # Build transcript with speaker labels
             transcript_lines.append(f"[{speaker}]: {text}")
+            filtered_segments.append(segment)
+
+        segments = filtered_segments
 
         # All downstream views are derived from the same, once-cleaned segment
         # list.  Re-cleaning the combined/speaker form can otherwise collapse
@@ -471,7 +549,7 @@ class TranscribeSummaryPipeline:
                 diarized_embeddings = {}
                 for speaker_label in speaker_labels:
                     emb = matcher.extract_embedding_from_segments(
-                        audio_file=audio_file,
+                        audio_path=audio_file,
                         segments=segments,
                         speaker_label=speaker_label,
                     )

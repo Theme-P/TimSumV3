@@ -26,11 +26,28 @@ def clean_transcription(text: str) -> str:
     cleaned_lines = []
     for line in text.splitlines() or [text]:
         line = remove_noise_patterns(line)
+        line = remove_consecutive_substring_repetition(line, min_length=15)
         line = remove_repetitive_phrases(line)
         line = re.sub(r"[ \t\f\v]+", " ", line).strip()
         if line:
             cleaned_lines.append(line)
     return "\n".join(cleaned_lines)
+
+def remove_consecutive_substring_repetition(text: str, min_length: int = 15) -> str:
+    """
+    Catch long repeating strings without spaces (common in Thai Whisper hallucinations).
+    Example: "การประชุมนี้การประชุมนี้การประชุมนี้" -> "การประชุมนี้"
+    """
+    # Matches any substring of length >= min_length that repeats 2 or more times
+    # We use non-greedy matching on the substring length to catch the shortest repeating unit first.
+    pattern = rf'(.{{{min_length},}}?)\1+'
+    # We replace with a single instance of the substring. 
+    # To be safe, we can run it iteratively in case of overlapping patterns.
+    prev_text = None
+    while text != prev_text:
+        prev_text = text
+        text = re.sub(pattern, r'\1', text)
+    return text
 
 
 def join_canonical_segments(segments: list[dict]) -> str:
@@ -43,12 +60,18 @@ def join_canonical_segments(segments: list[dict]) -> str:
 
 
 def remove_noise_patterns(text: str) -> str:
-    """Remove explicit ASR noise markers, never ordinary transcript terms."""
+    """Remove explicit ASR noise markers and known hallucination patterns."""
     noise_patterns = [
         r'\[(?:เสียงเพลง|เสียงดนตรี|music|noise|inaudible)\]',
         r'\((?:เสียงเพลง|เสียงดนตรี|music|noise|inaudible)\)',
         r'<(?:music|noise|inaudible)>',
         r'♪+',
+        # Known hallucinations from old prompts / model behaviors during dead air
+        r'ถอดเสียงการประชุม.*',
+        r'This is a meeting transcription.*',
+        r'这是一个会议记录.*',
+        r'การประชุมภาษาไทย\s*อังกฤษ.*',
+        r'^\s*สวัสดีครับ\s*$',
     ]
 
     for pattern in noise_patterns:

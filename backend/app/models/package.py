@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from bson import ObjectId
 from pydantic import BaseModel, ConfigDict, Field
@@ -175,7 +175,7 @@ class PackageChangeRequest(BaseModel):
     status: str = PACKAGE_REQUEST_PENDING
     note: str = ""
     admin_note: str = ""
-    requested_at: datetime = Field(default_factory=datetime.utcnow)
+    requested_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     reviewed_at: Optional[datetime] = None
     reviewed_by: Optional[str] = None
 

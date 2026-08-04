@@ -1,9 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 from typing import List, Optional
 
 from pydantic_core import core_schema
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from bson import ObjectId
 
 
@@ -87,9 +87,10 @@ class LLMConfig(BaseModel):
     updated_at: Optional[datetime] = None
     updated_by: Optional[str] = None
     
-    class Config:
-        populate_by_name = True
-        json_encoders = {ObjectId: str}
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_encoders={ObjectId: str}
+    )
 
 
 class LLMConfigUpdate(BaseModel):
@@ -132,6 +133,6 @@ def get_default_llm_config() -> dict:
         "fallback_models": list(DEFAULT_FALLBACK_MODELS),
         "temperature": 0.3,
         "max_tokens": 4000,
-        "updated_at": datetime.utcnow(),
+        "updated_at": datetime.now(timezone.utc),
         "updated_by": "system",
     }

@@ -4,7 +4,7 @@ Voice Sample model for speaker voice enrollment.
 Stores voice clip metadata, MinIO path, and speaker embedding vector
 for voice-matched diarization.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from bson import ObjectId
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,7 +28,7 @@ class VoiceSample(BaseModel):
     embedding: list[float] = []  # speaker embedding vector (~256 floats)
     duration_seconds: float = 0.0
     original_filename: str = ""
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     model_config = ConfigDict(
         arbitrary_types_allowed=True,

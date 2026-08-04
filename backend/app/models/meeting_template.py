@@ -1,23 +1,27 @@
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
+from pydantic_core import core_schema
 from bson import ObjectId
-from datetime import datetime
+from datetime import datetime, timezone
 from .meeting import MEETING_TYPES
 
 class PyObjectId(ObjectId):
     @classmethod
-    def __get_validators__(cls):
-        yield cls.validate
+    def __get_pydantic_core_schema__(cls, _source_type, _handler):
+        return core_schema.no_info_plain_validator_function(
+            cls.validate,
+            serialization=core_schema.to_string_ser_schema(),
+        )
 
     @classmethod
-    def validate(cls, v, *args, **kwargs):
+    def validate(cls, v):
         if not ObjectId.is_valid(v):
             raise ValueError("Invalid objectid")
         return ObjectId(v)
 
     @classmethod
-    def __get_pydantic_json_schema__(cls, field_schema):
-        field_schema.update(type="string")
+    def __get_pydantic_json_schema__(cls, _core_schema, _handler):
+        return {"type": "string"}
 
 class MeetingTemplate(BaseModel):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
@@ -30,9 +34,10 @@ class MeetingTemplate(BaseModel):
     updated_at: Optional[datetime] = None
     updated_by: Optional[str] = None
 
-    class Config:
-        populate_by_name = True
-        json_encoders = {ObjectId: str}
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_encoders={ObjectId: str}
+    )
 
 class MeetingTemplateUpdate(BaseModel):
     system_prompt: Optional[str] = None
@@ -92,6 +97,6 @@ def get_default_meeting_templates() -> list[dict]:
             "system_prompt": _get_default_system_prompt(mt_id),
             "temperature": 0.4,
             "max_tokens": 4000,
-            "updated_at": datetime.utcnow()
+            "updated_at": datetime.now(timezone.utc)
         })
     return configs

@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
-from typing import List
+from typing import Any, AsyncGenerator, Dict, List, Optional
 from io import BytesIO
 from dotenv import load_dotenv
 from bson import ObjectId
@@ -329,7 +329,7 @@ class TranscriptSegment(BaseModel):
     start: float
     end: float
     text: str
-    speaker: str = None
+    speaker: Optional[str] = None
 
 class ExportTranscriptRequest(BaseModel):
     segments: List[TranscriptSegment]
